@@ -125,12 +125,13 @@
 <div class="topbar">
   <span class="brand"><a href="index.html">🖨️ 3D Print Tools</a> · Browser</span>
   <label class="filebtn">📂 Open file
-    <input type="file" id="file" accept=".stl,.3mf,.obj,.ply,.gltf,.glb">
+    <input type="file" id="file" accept=".stl,.3mf,.obj,.ply,.gltf,.glb,.gcode">
   </label>
   <select id="sample" title="Load a bundled sample">
     <option value="">Samples…</option>
     <option value="samples/2x2_ver1.3mf">2x2_ver1.3mf</option>
     <option value="builtin:overhang">▲ Test overhang (built-in)</option>
+    <option value="builtin:dumbbell">▦ Test sub-face (built-in)</option>
   </select>
   <span class="spacer"></span>
   <button id="fit">Fit</button>
@@ -155,8 +156,10 @@
   <button id="t-view" class="active" title="Select / Orbit (Esc)">✋</button>
   <button id="t-move" title="Move a flat face — click a surface, drag an axis to push/pull (M)">✥<span class="kbd">M</span></button>
   <button id="t-obj" title="Select object — click a part; a weakly-attached blob is chopped at its narrowest neck (O)">🧩<span class="kbd">O</span></button>
+  <button id="t-draw" title="Draw a rectangle on a surface, then Enter to cut/add it (R)">📐<span class="kbd">R</span></button>
   <button id="t-ruler" title="Ruler — click a start surface, then an end point (K)">📏<span class="kbd">K</span></button>
   <div class="sep"></div>
+  <button id="t-cutadd" title="Draw mode: CUT subtracts, ADD unions (right-click while drawing to toggle)">✂️<span class="kbd" id="cutadd-lbl">CUT</span></button>
   <button id="t-del" class="del" title="Delete selected ruler / object (Del)">🗑</button>
 </div>
 
@@ -164,7 +167,7 @@
 
 <div class="controls-legend">
   <div><span class="k">L-drag</span> orbit &nbsp; <span class="k">Mid-drag</span> pan &nbsp; <span class="k">Wheel</span> zoom</div>
-  <div style="margin-top:4px;"><span class="k">M</span> move face · <span class="k">K</span> ruler · <span class="k">Esc</span> cancel · drop a file anywhere</div>
+  <div style="margin-top:4px;"><span class="k">M</span> move · <span class="k">O</span> object · <span class="k">R</span> draw · <span class="k">K</span> ruler · <span class="k">⌘Z</span> undo · <span class="k">⌘C/V/X</span></div>
 </div>
 
 <div class="drop-hint" id="drophint"><div>Drop STL / 3MF / OBJ / PLY here</div></div>
@@ -174,7 +177,10 @@
 {
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "fflate": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js",
+    "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.16/build/index.module.js"
   }
 }
 </script>
@@ -189,6 +195,8 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { unzipSync, strFromU8 } from 'fflate';
+import { Brush, Evaluator, ADDITION, SUBTRACTION } from 'three-bvh-csg';
 
 // ---------- scene ----------
 const wrap = document.getElementById('canvas-wrap');
@@ -336,8 +344,93 @@ function loaderFor(ext){
     case 'ply': return { type:'geometry', loader:new PLYLoader() };
     case 'gltf':
     case 'glb': return { type:'gltf', loader:new GLTFLoader() };
+    case 'gcode':
+    case 'gco':
+    case 'g': return { type:'gcode' };
     default: return null;
   }
+}
+
+// ---------- G-code toolpath fallback ----------
+function tryGcodeFrom3MF(buffer, filename){
+  try{
+    const files = unzipSync(new Uint8Array(buffer));
+    // pick the largest *.gcode entry (the real plate toolpath)
+    let bestName=null, bestLen=-1;
+    for(const name in files){ if(/\.gcode$/i.test(name) && files[name].length>bestLen){ bestName=name; bestLen=files[name].length; } }
+    if(!bestName) return false;
+    displayGcode(strFromU8(files[bestName]), filename+' › '+bestName.split('/').pop());
+    toast('No mesh in this .3mf — showing its G-code toolpath instead');
+    return true;
+  }catch(e){ console.error(e); return false; }
+}
+
+function parseGcode(text){
+  let x=0,y=0,z=0,e=0; let absXYZ=true;
+  // default E mode: relative if the file uses M83 anywhere (Bambu/Prusa/Flash), else absolute
+  let absE = !/^\s*M83\b/mi.test(text);
+  const pos=[]; let minx=1e9,miny=1e9,minz=1e9,maxx=-1e9,maxy=-1e9,maxz=-1e9, layers=0, lastLayerZ=null;
+  const lines=text.split('\n');
+  for(let li=0; li<lines.length; li++){
+    let s=lines[li]; const sc=s.indexOf(';'); if(sc>=0) s=s.slice(0,sc);
+    s=s.trim(); if(!s) continue;
+    const p=s.split(/\s+/); const cmd=p[0].toUpperCase();
+    if(cmd==='M82'){ absE=true; continue; }
+    if(cmd==='M83'){ absE=false; continue; }
+    if(cmd==='G90'){ absXYZ=true; continue; }
+    if(cmd==='G91'){ absXYZ=false; continue; }
+    if(cmd==='G92'){ for(let i=1;i<p.length;i++){ const c=p[i][0].toUpperCase(), v=parseFloat(p[i].slice(1));
+      if(isNaN(v))continue; if(c==='E')e=v; else if(c==='X')x=v; else if(c==='Y')y=v; else if(c==='Z')z=v; } continue; }
+    if(cmd==='G0'||cmd==='G1'){
+      let nx=x,ny=y,nz=z, ne=e, hasE=false;
+      for(let i=1;i<p.length;i++){ const c=p[i][0].toUpperCase(), v=parseFloat(p[i].slice(1)); if(isNaN(v))continue;
+        if(c==='X') nx=absXYZ?v:x+v; else if(c==='Y') ny=absXYZ?v:y+v; else if(c==='Z') nz=absXYZ?v:z+v;
+        else if(c==='E'){ ne=absE?v:e+v; hasE=true; } }
+      const de = hasE ? ne-e : 0;
+      const moved = (nx!==x||ny!==y||nz!==z);
+      if(de>1e-6 && moved){                    // extrusion segment
+        pos.push(x,y,z, nx,ny,nz);
+        minx=Math.min(minx,x,nx); maxx=Math.max(maxx,x,nx);
+        miny=Math.min(miny,y,ny); maxy=Math.max(maxy,y,ny);
+        minz=Math.min(minz,z,nz); maxz=Math.max(maxz,z,nz);
+        if(nz!==lastLayerZ){ layers++; lastLayerZ=nz; }
+      }
+      x=nx;y=ny;z=nz; if(hasE) e=ne;
+      if(pos.length>6000000) break;             // safety cap (~1M segments)
+    }
+  }
+  return { pos, bbox:{minx,miny,minz,maxx,maxy,maxz}, layers };
+}
+
+function displayGcode(text, name){
+  const g=parseGcode(text);
+  if(!g.pos.length){ toast('No extrusion moves found in G-code', true); return; }
+  clearObject();
+  const b=g.bbox; const cx=(b.minx+b.maxx)/2, cy=(b.miny+b.maxy)/2;
+  const sizeX=b.maxx-b.minx, sizeY=b.maxy-b.miny, sizeZ=b.maxz-b.minz;
+  const geo=new THREE.BufferGeometry();
+  const arr=new Float32Array(g.pos.length);
+  for(let i=0;i<g.pos.length;i+=3){ arr[i]=g.pos[i]-cx; arr[i+1]=g.pos[i+1]-cy; arr[i+2]=g.pos[i+2]-b.minz; }
+  geo.setAttribute('position', new THREE.BufferAttribute(arr,3));
+  // color by layer height (blue → cyan → orange)
+  const col=new Float32Array(g.pos.length); const zr=Math.max(sizeZ,1e-6); const c=new THREE.Color();
+  for(let i=0;i<arr.length;i+=3){ const t=arr[i+2]/zr; c.setHSL(0.62-0.62*t, 0.75, 0.55);
+    col[i]=c.r; col[i+1]=c.g; col[i+2]=c.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+  const seg=new THREE.LineSegments(geo, new THREE.LineBasicMaterial({vertexColors:true}));
+  currentObject=new THREE.Group(); currentObject.add(seg); scene.add(currentObject);
+  currentMesh=null; currentGeometry=null;                  // editor tools operate on meshes only
+  spanScale=Math.max(sizeX,sizeY,sizeZ,10);
+  if(typeof onModelLoaded==='function') onModelLoaded();
+
+  document.getElementById('i-name').textContent=name;
+  document.getElementById('i-tris').textContent=fmt(g.pos.length/2)+' segs · '+g.layers+' layers';
+  document.getElementById('i-x').textContent=fmt(sizeX)+' mm';
+  document.getElementById('i-y').textContent=fmt(sizeY)+' mm';
+  document.getElementById('i-z').textContent=fmt(sizeZ)+' mm';
+  fitGridTo(Math.max(sizeX,sizeY,40));
+  frameObject(new THREE.Vector3(sizeX,sizeY,sizeZ));
+  toast('G-code toolpath: '+g.layers+' layers, '+fmt(g.pos.length/2)+' segments');
 }
 
 function loadArrayBuffer(buffer, filename){
@@ -351,7 +444,13 @@ function loadArrayBuffer(buffer, filename){
     } else if(spec.type === 'group'){
       const group = spec.loader.parse(buffer);
       const merged = mergeToGeometry(group);
-      if(!merged){ toast('No mesh found in file', true); return; }
+      if(!merged){
+        // Some slicer .3mf files (e.g. Bambu/Flash Studio sliced projects) carry
+        // no mesh — only a G-code toolpath. Fall back to rendering that.
+        if(tryGcodeFrom3MF(buffer, filename)) return;
+        toast('This .3mf has no 3D mesh (sliced/G-code-only project). Re-save it as a mesh 3MF or STL.', true);
+        return;
+      }
       displayGeometry(merged, filename);
     } else if(spec.type === 'group-str'){
       const text = new TextDecoder().decode(buffer);
@@ -365,7 +464,10 @@ function loadArrayBuffer(buffer, filename){
         if(!merged){ toast('No mesh found in glTF', true); return; }
         displayGeometry(merged, filename);
       }, (e)=>{ console.error(e); toast('Failed to parse glTF', true); });
+    } else if(spec.type === 'gcode'){
+      displayGcode(new TextDecoder().decode(buffer), filename);
     }
+    saveLast(buffer, filename);           // remember for next visit
     toast('Loaded '+filename);
   }catch(e){
     console.error(e);
@@ -405,9 +507,21 @@ function loadBuiltinOverhang(){
   displayGeometry(g.toNonIndexed(), 'overhang_test');
   toast('Loaded built-in overhang test');
 }
+// dumbbell plate: a small square top attached to a big one by a thin neck — the
+// small square is an "almost-separable" sub-rectangle for the Move-mode cycling.
+function buildDumbbell(){
+  return BufferGeometryUtils.mergeGeometries([
+    new THREE.BoxGeometry(40,40,4).translate(0,0,2),
+    new THREE.BoxGeometry(8,8,4).translate(24,0,2),
+    new THREE.BoxGeometry(16,16,4).translate(36,0,2)
+  ],false).toNonIndexed();
+}
+function loadBuiltinDumbbell(){ displayGeometry(buildDumbbell(),'subface_test');
+  toast('Sub-face test — in Move mode, click the small square, then click again to cycle'); }
 document.getElementById('sample').addEventListener('change', e=>{
   const v=e.target.value; if(!v) return;
   if(v==='builtin:overhang') loadBuiltinOverhang();
+  else if(v==='builtin:dumbbell') loadBuiltinDumbbell();
   else loadFromURL(v);
 });
 document.getElementById('fit').onclick = ()=>{
@@ -486,6 +600,11 @@ function updateHud(){
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
       : '<b>OBJECT</b> click a part — a weakly-attached blob is chopped at its narrowest neck';
+  else if(mode==='draw') t = drawStage===1
+      ? '<b>DRAW</b> release to set the rectangle'
+      : (drawStage===3
+        ? '<b>DRAW · '+drawMode.toUpperCase()+'</b> Enter to apply · right-click toggles cut/add · Esc cancels'
+        : '<b>DRAW · '+drawMode.toUpperCase()+'</b> drag a rectangle on a surface · right-click toggles cut/add');
   else if(mode==='ruler') t = (rulerPhase===1)
       ? '<b>RULER</b> click to set the end · nearest axis snaps, go off-axis for free · Esc'
       : '<b>RULER</b> click a surface to set the start point';
@@ -494,18 +613,21 @@ function updateHud(){
 }
 function setMode(m){
   mode=m;
-  document.getElementById('t-view').classList.toggle('active', m==='view');
-  document.getElementById('t-move').classList.toggle('active', m==='move');
-  document.getElementById('t-obj').classList.toggle('active', m==='object');
-  document.getElementById('t-ruler').classList.toggle('active', m==='ruler');
+  for(const [id,mm] of [['t-view','view'],['t-move','move'],['t-obj','object'],['t-draw','draw'],['t-ruler','ruler']])
+    document.getElementById(id).classList.toggle('active', m===mm);
   if(m!=='move' && m!=='object') clearSelection();
   if(m!=='ruler'){ rulerPhase=0; rulerFrame=null; removePreview(); }
+  if(m!=='draw') cancelDraw();
+  // in Draw mode the left button draws the rectangle instead of orbiting
+  controls.mouseButtons.LEFT = (m==='draw') ? null : THREE.MOUSE.ROTATE;
   updateHud();
 }
 document.getElementById('t-view').onclick =()=>setMode('view');
 document.getElementById('t-move').onclick =()=>setMode('move');
 document.getElementById('t-obj').onclick  =()=>setMode('object');
+document.getElementById('t-draw').onclick =()=>setMode('draw');
 document.getElementById('t-ruler').onclick=()=>setMode('ruler');
+document.getElementById('t-cutadd').onclick=()=>setCutAdd(drawMode==='cut'?'add':'cut');
 document.getElementById('t-del').onclick  =()=>{
   if(selection && selection.kind==='object') deleteSelectedObject();
   else if(selectedRuler) deleteSelectedRuler();
@@ -516,7 +638,8 @@ const gizmoProxy=new THREE.Object3D(); scene.add(gizmoProxy);
 const tc=new TransformControls(camera, dom);
 tc.setMode('translate'); tc.setSize(0.85);
 let justDragged=false;
-tc.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value; if(e.value) justDragged=true; });
+tc.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value;
+  if(e.value){ justDragged=true; if(selection && currentGeometry) pushUndo(); } });
 tc.addEventListener('objectChange', onGizmoChange);
 tc.attach(gizmoProxy); tc.visible=false; tc.enabled=false;
 scene.add(tc);
@@ -527,12 +650,8 @@ function triNormal(pos,t,out){ const i=t*3;
   a.fromBufferAttribute(pos,i); b.fromBufferAttribute(pos,i+1); c.fromBufferAttribute(pos,i+2);
   return faceNormal(a,b,c,out); }
 
-function selectFaceAt(px,py){
-  const hit=raycastModel(px,py);
-  if(!hit){ clearSelection(); return; }
-  buildSelection(hit.faceIndex);
-}
-function buildSelection(faceIndex){
+// gather the coplanar face (all triangles on the same plane as the clicked one)
+function gatherCoplanar(faceIndex){
   const pos=currentGeometry.getAttribute('position');
   const N=new THREE.Vector3(); triNormal(pos,faceIndex,N);
   a.fromBufferAttribute(pos, faceIndex*3); const D=N.dot(a);
@@ -545,6 +664,12 @@ function buildSelection(faceIndex){
     if(Math.abs(N.dot(a)-D) > dTol) continue;
     tris.push(t);
   }
+  const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
+  return {tris,N,D,T1,T2};
+}
+// commit a face-triangle set as the current push/pull selection
+function applyFaceSelection(tris, N, T1, T2){
+  const pos=currentGeometry.getAttribute('position');
   const keys=new Set(); const centroid=new THREE.Vector3(); let cc=0;
   for(const t of tris){ for(let k=0;k<3;k++){ a.fromBufferAttribute(pos,t*3+k);
     keys.add(keyOf(a.x,a.y,a.z)); centroid.add(a); cc++; } }
@@ -553,14 +678,22 @@ function buildSelection(faceIndex){
   for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i);
     if(keys.has(keyOf(a.x,a.y,a.z))) movable.push(i); }
   selection={ tris, movableIdx:movable, origArray:Float32Array.from(pos.array), anchor:centroid.clone(), kind:'face' };
-
-  const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
   gizmoProxy.position.copy(centroid);
   gizmoProxy.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(T1,T2,N));
   tc.setSpace('local'); tc.visible=true; tc.enabled=true;
   buildHighlight();
-  toast(tris.length+' triangles selected · drag the blue (normal) axis to push/pull');
   updateHud();
+}
+function buildSelection(faceIndex){        // level-0 helper (used by tests)
+  const g=gatherCoplanar(faceIndex); applyFaceSelection(g.tris, g.N, g.T1, g.T2);
+}
+
+function selectFaceAt(px,py){
+  const hit=raycastModel(px,py);
+  if(!hit){ clearSelection(); return; }
+  const g=gatherCoplanar(hit.faceIndex);
+  applyFaceSelection(g.tris, g.N, g.T1, g.T2);
+  toast(g.tris.length+' tris — face selected · drag the blue (normal) axis to push/pull');
 }
 function onGizmoChange(){
   if(!selection) return;
@@ -691,6 +824,7 @@ function setObjectSelection(tris){
 }
 function deleteSelectedObject(){
   if(!selection||selection.kind!=='object') return;
+  pushUndo();
   const keep=new Set(selection.tris);
   const pos=currentGeometry.getAttribute('position'); const src=pos.array; const nT=pos.count/3;
   const out=[];
@@ -754,6 +888,7 @@ function rulerClick(px,py){
     rulerPhase=1; makePreview(); updateHud();
   } else {
     const {end,axis}=rulerEnd(px,py);
+    pushUndo();
     addRuler(rulerFrame.S.clone(), end, axis);
     rulerPhase=0; rulerFrame=null; removePreview(); updateHud();
   }
@@ -802,7 +937,7 @@ function selectRuler(r){ deselectRuler(); selectedRuler=r;
 function deselectRuler(){ if(!selectedRuler) return;
   selectedRuler.grp.traverse(o=>{ if(o.material) o.material.color.set(0xffd43b); });
   selectedRuler.el.classList.remove('sel'); selectedRuler=null; updateHud(); }
-function deleteSelectedRuler(){ const r=selectedRuler; if(!r) return; selectedRuler=null;
+function deleteSelectedRuler(){ const r=selectedRuler; if(!r) return; pushUndo(); selectedRuler=null;
   scene.remove(r.grp); r.grp.traverse(o=>{ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); });
   r.el.remove(); const i=rulers.indexOf(r); if(i>=0) rulers.splice(i,1); updateHud(); toast('Ruler deleted'); }
 function clearAllRulers(){ for(const r of rulers.slice()){ scene.remove(r.grp);
@@ -817,10 +952,149 @@ function updateLabels(){
   if(preview) place(preview.el, preview.S.clone().add(preview.E).multiplyScalar(0.5));
 }
 
+// ---------- undo / redo + clipboard (objects) ----------
+const undoStack=[], redoStack=[]; let clipboard=null;
+function updateTris(){ if(currentGeometry) document.getElementById('i-tris').textContent=fmt(currentGeometry.getAttribute('position').count/3); }
+function snapshot(){
+  return { pos: currentGeometry ? Float32Array.from(currentGeometry.getAttribute('position').array) : null,
+           rulers: rulers.map(r=>({S:r.S.clone(),E:r.E.clone(),axis:r.axis})) };
+}
+function pushUndo(){ undoStack.push(snapshot()); if(undoStack.length>25) undoStack.shift(); redoStack.length=0; }
+function restoreState(s){
+  if(s.pos && currentMesh){
+    const ng=new THREE.BufferGeometry();
+    ng.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(s.pos),3)); ng.computeVertexNormals();
+    currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng; updateDims(); updateTris();
+  }
+  clearSelection(); clearAllRulers();
+  for(const r of s.rulers) addRuler(r.S.clone(), r.E.clone(), r.axis);
+}
+function undo(){ if(!undoStack.length){ toast('Nothing to undo'); return; } redoStack.push(snapshot()); restoreState(undoStack.pop()); toast('Undo'); }
+function redo(){ if(!redoStack.length){ toast('Nothing to redo'); return; } undoStack.push(snapshot()); restoreState(redoStack.pop()); toast('Redo'); }
+
+function copyObject(){
+  if(!selection || selection.kind!=='object'){ toast('Pick an object (O) first to copy', true); return; }
+  const src=currentGeometry.getAttribute('position').array; const out=[];
+  for(const t of selection.tris){ const o=t*9; for(let j=0;j<9;j++) out.push(src[o+j]); }
+  clipboard=Float32Array.from(out); toast('Copied object ('+selection.tris.length+' triangles)');
+}
+function cutObject(){ if(!selection||selection.kind!=='object'){ toast('Pick an object (O) first to cut', true); return; }
+  copyObject(); deleteSelectedObject(); }
+function pasteObject(){
+  if(!clipboard){ toast('Clipboard is empty', true); return; }
+  if(!currentMesh){ toast('Paste needs a mesh loaded', true); return; }
+  pushUndo();
+  const src=currentGeometry.getAttribute('position').array; const off=spanScale*0.1;
+  const merged=new Float32Array(src.length+clipboard.length); merged.set(src,0);
+  for(let i=0;i<clipboard.length;i+=3){ merged[src.length+i]=clipboard[i]+off;
+    merged[src.length+i+1]=clipboard[i+1]+off; merged[src.length+i+2]=clipboard[i+2]; }
+  const ng=new THREE.BufferGeometry(); ng.setAttribute('position', new THREE.BufferAttribute(merged,3)); ng.computeVertexNormals();
+  currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng; updateDims(); updateTris();
+  const startTri=src.length/9, nNew=clipboard.length/9, tris=[]; for(let t=0;t<nNew;t++) tris.push(startTri+t);
+  setMode('object'); setObjectSelection(tris);
+  toast('Pasted '+nNew+' triangles — drag to place');
+}
+
+// ---------- draw rectangle → extrude → boolean cut / add ----------
+const csgEval=new Evaluator(); csgEval.attributes=['position','normal'];
+let drawMode='cut';                 // 'cut' | 'add'
+let drawStage=0;                    // 0 idle · 1 dragging base · 3 pending (box built)
+let drawStart=null, rectA=null, rectB=null, rectLine=null, boxPreview=null, pendingBox=null;
+
+function setCutAdd(m){ drawMode=m; document.getElementById('cutadd-lbl').textContent=m.toUpperCase();
+  if(rectLine) rectLine.material.color.set(m==='cut'?0xff5555:0x55dd77);
+  if(drawStage===3) rebuildPending(); updateHud(); }
+function rayPlane(O,D,P,N){ const den=D.dot(N); if(Math.abs(den)<1e-9) return null;
+  return O.clone().addScaledVector(D, P.clone().sub(O).dot(N)/den); }
+
+function rectCorners(){
+  const {P,T1,T2}=drawStart;
+  const uA=rectA.clone().sub(P).dot(T1), vA=rectA.clone().sub(P).dot(T2);
+  const uB=rectB.clone().sub(P).dot(T1), vB=rectB.clone().sub(P).dot(T2);
+  const u0=Math.min(uA,uB),u1=Math.max(uA,uB),v0=Math.min(vA,vB),v1=Math.max(vA,vB);
+  const mk=(u,v)=>P.clone().addScaledVector(T1,u).addScaledVector(T2,v);
+  return {corner:[mk(u0,v0),mk(u1,v0),mk(u1,v1),mk(u0,v1)], u0,u1,v0,v1};
+}
+function buildRectLine(){ removeRectLine();
+  rectLine=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(
+    [drawStart.P,drawStart.P,drawStart.P,drawStart.P]),
+    new THREE.LineBasicMaterial({color:drawMode==='cut'?0xff5555:0x55dd77, depthTest:false}));
+  rectLine.renderOrder=4; scene.add(rectLine); }
+function updateRectLine(){ if(!rectLine) return; const c=rectCorners().corner;
+  const p=rectLine.geometry.getAttribute('position'); for(let i=0;i<4;i++) p.setXYZ(i,c[i].x,c[i].y,c[i].z); p.needsUpdate=true; }
+function removeRectLine(){ if(rectLine){ scene.remove(rectLine); rectLine.geometry.dispose(); rectLine.material.dispose(); rectLine=null; } }
+
+function buildBoxGeo(){
+  const {P,N,T1,T2}=drawStart; const R=rectCorners();
+  const cu=(R.u0+R.u1)/2, cv=(R.v0+R.v1)/2, w=R.u1-R.u0, d=R.v1-R.v0;
+  const base=P.clone().addScaledVector(T1,cu).addScaledVector(T2,cv);
+  let nHi,nLo;
+  if(drawMode==='add'){ nHi=Math.max(spanScale*0.15, Math.min(w,d)*0.6); nLo=-0.3; }
+  else {                                   // cut: from just above the surface down through the model
+    const pos=currentGeometry.getAttribute('position'); let mn=1e9;
+    for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i); const pj=a.clone().sub(base).dot(N); if(pj<mn)mn=pj; }
+    nHi=1; nLo=mn-1;
+  }
+  const geo=new THREE.BoxGeometry(w,d,nHi-nLo);
+  const basis=new THREE.Matrix4().makeBasis(T1,T2,N);
+  basis.setPosition(base.clone().addScaledVector(N,(nHi+nLo)/2));
+  geo.applyMatrix4(basis); geo.computeVertexNormals();
+  return geo;
+}
+function rebuildPending(){
+  removeBoxPreview(); pendingBox=buildBoxGeo();
+  boxPreview=new THREE.Mesh(pendingBox, new THREE.MeshStandardMaterial({
+    color:drawMode==='cut'?0xff5555:0x55dd77, transparent:true, opacity:0.45, side:THREE.DoubleSide }));
+  scene.add(boxPreview);
+}
+function removeBoxPreview(){ if(boxPreview){ scene.remove(boxPreview); boxPreview.material.dispose(); boxPreview=null; }
+  if(pendingBox){ pendingBox.dispose?.(); pendingBox=null; } }
+function cancelDraw(){ removeRectLine(); removeBoxPreview(); drawStage=0; drawStart=null; updateHud(); }
+
+function drawDown(e){
+  if(e.button!==0 || drawStage!==0) return;
+  const r=dom.getBoundingClientRect(); const hit=raycastModel(e.clientX-r.left, e.clientY-r.top);
+  if(!hit){ toast('Click a surface to start the rectangle', true); return; }
+  const N=new THREE.Vector3(); triNormal(currentGeometry.getAttribute('position'), hit.faceIndex, N);
+  const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
+  drawStart={P:hit.point.clone(),N,T1,T2}; rectA=hit.point.clone(); rectB=hit.point.clone();
+  drawStage=1; buildRectLine(); updateHud();
+}
+function drawMoveEvt(e){
+  if(drawStage!==1) return;
+  const r=dom.getBoundingClientRect(); setNDC(e.clientX-r.left, e.clientY-r.top); rc.setFromCamera(ndc,camera);
+  const p=rayPlane(rc.ray.origin, rc.ray.direction, drawStart.P, drawStart.N); if(!p) return;
+  rectB=p; updateRectLine();
+}
+function drawUp(e){
+  if(e.button!==0 || drawStage!==1) return;
+  const dsp=rectB.clone().sub(rectA);
+  if(Math.abs(dsp.dot(drawStart.T1))<spanScale*0.01 || Math.abs(dsp.dot(drawStart.T2))<spanScale*0.01){
+    cancelDraw(); toast('Rectangle too small — try again', true); return; }
+  drawStage=3; rebuildPending(); updateHud();
+}
+function applyDraw(){
+  if(drawStage!==3 || !pendingBox || !currentMesh){ return; }
+  pushUndo();
+  try{
+    const A=new Brush(currentGeometry); A.updateMatrixWorld();
+    const B=new Brush(pendingBox); B.updateMatrixWorld();
+    const res=csgEval.evaluate(A,B, drawMode==='cut'?SUBTRACTION:ADDITION);
+    const ng=res.geometry.clone(); ng.computeVertexNormals(); ng.computeBoundingBox();
+    currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
+    updateDims(); updateTris();
+    toast((drawMode==='cut'?'Cut':'Added')+' — mesh now '+fmt(ng.getAttribute('position').count/3)+' triangles');
+  }catch(err){ console.error(err); toast('Boolean failed: '+err.message, true); undo(); }
+  cancelDraw();
+}
+
 // ---------- pointer + keyboard ----------
 let downPos=null, downTime=0;
-dom.addEventListener('pointerdown', e=>{ if(e.button!==0) return; downPos={x:e.clientX,y:e.clientY}; downTime=performance.now(); });
+dom.addEventListener('pointerdown', e=>{
+  if(mode==='draw'){ drawDown(e); return; }
+  if(e.button!==0) return; downPos={x:e.clientX,y:e.clientY}; downTime=performance.now(); });
 dom.addEventListener('pointerup', e=>{
+  if(mode==='draw'){ drawUp(e); return; }
   if(e.button!==0) return;
   const wasDrag=justDragged; justDragged=false;
   const start=downPos; downPos=null;
@@ -834,17 +1108,34 @@ dom.addEventListener('pointerup', e=>{
   else selectRulerAt(px,py);
 });
 dom.addEventListener('pointermove', e=>{
+  if(mode==='draw'){ drawMoveEvt(e); return; }
   if(mode==='ruler' && rulerPhase===1){ const r=dom.getBoundingClientRect(); updatePreview(e.clientX-r.left, e.clientY-r.top); }
+});
+dom.addEventListener('contextmenu', e=>{
+  if(mode==='draw'){ e.preventDefault(); setCutAdd(drawMode==='cut'?'add':'cut'); }
 });
 window.addEventListener('keydown', e=>{
   if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const mod=e.ctrlKey||e.metaKey;
   const k=e.key.toLowerCase();
+  if(mod){
+    if(k==='z' && !e.shiftKey){ undo(); e.preventDefault(); }
+    else if((k==='z' && e.shiftKey) || k==='y'){ redo(); e.preventDefault(); }
+    else if(k==='c'){ copyObject(); e.preventDefault(); }
+    else if(k==='x'){ cutObject(); e.preventDefault(); }
+    else if(k==='v'){ pasteObject(); e.preventDefault(); }
+    else if(k==='d'){ copyObject(); pasteObject(); e.preventDefault(); }  // duplicate
+    return;
+  }
   if(k==='m') setMode('move');
   else if(k==='o') setMode('object');
+  else if(k==='r') setMode('draw');
   else if(k==='k') setMode('ruler');
-  else if(e.key==='Escape') setMode('view');
+  else if(e.key==='Enter'){ if(mode==='draw' && drawStage===3){ applyDraw(); e.preventDefault(); } }
+  else if(e.key==='Escape'){ if(mode==='draw' && drawStage!==0) cancelDraw(); else setMode('view'); }
   else if(e.key==='Delete'||e.key==='Backspace'){
-    if(selection && selection.kind==='object'){ deleteSelectedObject(); e.preventDefault(); }
+    if(mode==='draw' && drawStage!==0){ cancelDraw(); e.preventDefault(); }
+    else if(selection && selection.kind==='object'){ deleteSelectedObject(); e.preventDefault(); }
     else if(selectedRuler){ deleteSelectedRuler(); e.preventDefault(); } }
 });
 
@@ -859,8 +1150,28 @@ function animate(){
 }
 animate();
 
-// preload the bundled sample on start
-loadFromURL('samples/2x2_ver1.3mf');
+// remember the last-loaded file in localStorage and restore it next visit
+function saveLast(buffer, filename){
+  try{
+    if(!buffer || buffer.byteLength>4*1024*1024){ return; }   // don't cache big files
+    const bytes=new Uint8Array(buffer); let bin=''; const CH=0x8000;
+    for(let i=0;i<bytes.length;i+=CH) bin+=String.fromCharCode.apply(null, bytes.subarray(i,i+CH));
+    localStorage.setItem('3dpt_last', JSON.stringify({name:filename, b64:btoa(bin)}));
+  }catch(e){ /* quota / private mode — ignore */ }
+}
+function loadLast(){
+  try{
+    const s=localStorage.getItem('3dpt_last'); if(!s) return false;
+    const {name,b64}=JSON.parse(s); const bin=atob(b64); const arr=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+    loadArrayBuffer(arr.buffer, name); toast('Reopened your last file: '+name); return true;
+  }catch(e){ return false; }
+}
+
+// preload: ?model=<url> wins; else your last-opened file; else the bundled sample
+const _q=new URLSearchParams(location.search).get('model');
+if(_q) loadFromURL(_q);
+else if(!loadLast()) loadFromURL('samples/2x2_ver1.3mf');
 </script>
 </body>
 </html>

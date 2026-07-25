@@ -37,9 +37,16 @@ The achieved reduction is **measured live** (π·r_tip² vs. a standard flat tip
 ### Editor tools (left toolbox)
 
 - **Move face — `M`.** Click a flat surface to select its coplanar face; a 3-axis gizmo aligned to the surface appears. Drag an axis to **push/pull** — the vertices on that face (and every triangle welded to them) move, so the solid restretches to the new face position. Bounding-box dimensions update live.
-- **Select object — `O`.** Click a part. If it's a standalone connected component it's selected whole; if it's only *weakly* attached (a thin neck), the tool sweeps for the **smallest cross-section plane** and virtually disconnects there, so a leg/blob pops off as its own object. Drag it away to detach, or press `Del`/🗑 to remove it.
+- **Select object — `O`.** Click a part. If it's a standalone connected component it's selected whole; if it's only *weakly* attached (a thin neck), the tool sweeps for the **smallest cross-section plane** and virtually disconnects there, so a leg/blob pops off as its own object. Drag it away to detach, `Del`/🗑 to remove, or copy/cut/paste/duplicate it.
+- **Draw — `R`.** Drag a rectangle on a surface — it's aligned to that surface's own axes. On release it becomes a box; press **`Enter`** to apply it as a real boolean: **cut** (subtract, default) or **add** (union). Right-click (or the ✂️ button) toggles cut/add; `Esc` cancels. Booleans use [three-bvh-csg](https://github.com/gkjohnson/three-bvh-csg).
 - **Ruler — `K`.** Click a start point on a surface, then an end point. The measuring X/Y/Z axes are built from that surface's normal + tangents; while you move, the end **snaps to whichever axis is nearest the cursor**, and deviating far from all three switches to a **free** 3-D measurement. Each ruler shows its length in mm, and can be clicked to select and deleted.
+- **Undo / redo** — `⌘/Ctrl+Z`, `⇧Z` (or `Ctrl+Y`). **Clipboard** — `⌘/Ctrl+C` copy, `X` cut, `V` paste, `D` duplicate (operate on the selected object).
 - **Esc** returns to orbit/select mode.
+
+### Other conveniences
+
+- **Sliced / G-code-only `.3mf`**: some slicer projects (e.g. Bambu/Flash Studio) save only a toolpath and no mesh. Instead of failing, the viewer parses the embedded **G-code and renders the toolpath** (colored by layer height). Raw `.gcode` files open the same way.
+- **Remembers your last file**: the most recent model you open is cached in the browser (localStorage) and reopened automatically next time. `viewer.html?model=<url>` opens a specific model by link.
 
 ---
 
