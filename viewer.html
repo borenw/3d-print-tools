@@ -163,7 +163,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Watertight chop + export repair (weld, cap holes)">rev 16</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Draw circle/rect by click-click (center+radius) or drag">rev 17</a>
 </div>
 
 <div class="info" id="info">
@@ -714,9 +714,11 @@ function updateHud(){
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
       : '<b>OBJECT</b> click a part — a weakly-attached blob is chopped at its narrowest neck';
-  else if(mode==='draw') t = drawStage===1
-      ? '<b>DRAW · '+(drawShape==='circle'?'CIRCLE':'RECT')+' · '+drawMode.toUpperCase()+'</b> release to '+(drawMode==='cut'?'recess':'protrude')
-      : '<b>DRAW · '+(drawShape==='circle'?'CIRCLE':'RECT')+' · '+drawMode.toUpperCase()+'</b> drag a '+(drawShape==='circle'?'circle':'rectangle')+' on a surface — <b>'+(drawMode==='cut'?'recess':'protrude')+'</b> on release · ▭/◯ shape · ✂️ recess/protrude';
+  else if(mode==='draw'){
+    const lbl=drawShape==='circle'?'CIRCLE':'RECT', act=drawMode==='cut'?'recess':'protrude';
+    t = (drawStage===1||drawStage===2)
+      ? '<b>DRAW · '+lbl+' · '+drawMode.toUpperCase()+'</b> '+(drawShape==='circle'?'click again for the radius':'click the opposite corner')+' (or release a drag) to '+act
+      : '<b>DRAW · '+lbl+' · '+drawMode.toUpperCase()+'</b> click a surface to place a '+(drawShape==='circle'?'circle':'rectangle')+' ('+act+') · ▭/◯ shape · ✂️ recess/protrude'; }
   else if(mode==='ruler') t = (rulerPhase===1)
       ? '<b>RULER</b> click to set the end · nearest axis snaps, go off-axis for free · Esc'
       : '<b>RULER</b> click a surface to set the start point';
@@ -1310,8 +1312,8 @@ function buildRectLine(){ removeRectLine();
   rectLine.renderOrder=4; scene.add(rectLine); }
 function updateRectLine(){ if(!rectLine) return;
   const p=rectLine.geometry.getAttribute('position'); const R=rectCorners(); const {P,T1,T2}=drawStart;
-  if(drawShape==='circle'){
-    const cu=(R.u0+R.u1)/2, cv=(R.v0+R.v1)/2, r=Math.min(R.u1-R.u0,R.v1-R.v0)/2;
+  if(drawShape==='circle'){                 // first point = centre, drag/second point = radius
+    const cu=rectA.clone().sub(P).dot(T1), cv=rectA.clone().sub(P).dot(T2), r=rectA.distanceTo(rectB);
     for(let i=0;i<p.count;i++){ const a2=i/p.count*Math.PI*2;
       const q=P.clone().addScaledVector(T1,cu+Math.cos(a2)*r).addScaledVector(T2,cv+Math.sin(a2)*r);
       p.setXYZ(i,q.x,q.y,q.z); }
@@ -1320,9 +1322,11 @@ function updateRectLine(){ if(!rectLine) return;
 function removeRectLine(){ if(rectLine){ scene.remove(rectLine); rectLine.geometry.dispose(); rectLine.material.dispose(); rectLine=null; } }
 
 function buildBoxGeo(){
-  const {P,N,T1,T2}=drawStart; const R=rectCorners();
-  const cu=(R.u0+R.u1)/2, cv=(R.v0+R.v1)/2, w=R.u1-R.u0, d=R.v1-R.v0;
-  const base=P.clone().addScaledVector(T1,cu).addScaledVector(T2,cv);
+  const {P,N,T1,T2}=drawStart;
+  let base, w, d, rC;
+  if(drawShape==='circle'){ base=rectA.clone(); rC=rectA.distanceTo(rectB); w=d=2*rC; }
+  else { const R=rectCorners(); const cu=(R.u0+R.u1)/2, cv=(R.v0+R.v1)/2; w=R.u1-R.u0; d=R.v1-R.v0;
+    base=P.clone().addScaledVector(T1,cu).addScaledVector(T2,cv); }
   let nHi,nLo;
   if(drawMode==='add'){ nHi=Math.max(spanScale*0.15, Math.min(w,d)*0.6); nLo=-0.3; }
   else {                                   // cut: from just above the surface down through the model
@@ -1333,7 +1337,7 @@ function buildBoxGeo(){
   const center=base.clone().addScaledVector(N,(nHi+nLo)/2);
   let geo;
   if(drawShape==='circle'){
-    const r=Math.min(w,d)/2;
+    const r=rC;
     geo=new THREE.CylinderGeometry(r,r,nHi-nLo,40);        // extruded circle
     const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), N);
     geo.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q).setPosition(center));
@@ -1354,21 +1358,28 @@ function removeBoxPreview(){ if(boxPreview){ scene.remove(boxPreview); boxPrevie
   if(pendingBox){ pendingBox.dispose?.(); pendingBox=null; } }
 function cancelDraw(){ removeRectLine(); removeBoxPreview(); showSnapMarker(null); drawStage=0; drawStart=null; updateHud(); }
 
+let drawDownXY=null;
 function drawDown(e){
-  if(e.button!==0 || drawStage!==0) return;
+  if(e.button!==0) return;
   const r=dom.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
-  const hit=raycastModel(px,py);
-  if(!hit){ toast('Click a surface to start the rectangle', true); return; }
-  const N=new THREE.Vector3(); triNormal(currentGeometry.getAttribute('position'), hit.faceIndex, N);
-  const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
-  drawStart={P:hit.point.clone(),N,T1,T2};
-  resetSnap();
-  const p0=snapCorner(hit.point.clone(), px, py);
-  drawStart.P=p0.clone(); rectA=p0.clone(); rectB=p0.clone();
-  drawStage=1; buildRectLine(); updateHud();
+  if(drawStage===0){                          // first click / drag-start: set the start point
+    const hit=raycastModel(px,py);
+    if(!hit){ toast('Click a surface to start the '+(drawShape==='circle'?'circle':'rectangle'), true); return; }
+    const N=new THREE.Vector3(); triNormal(currentGeometry.getAttribute('position'), hit.faceIndex, N);
+    const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
+    drawStart={P:hit.point.clone(),N,T1,T2};
+    resetSnap();
+    const p0=snapCorner(hit.point.clone(), px, py);
+    drawStart.P=p0.clone(); rectA=p0.clone(); rectB=p0.clone();
+    drawStage=1; drawDownXY={x:px,y:py}; buildRectLine(); updateHud();
+  } else if(drawStage===2){                    // second click: set the end and apply
+    const p=rayPlane(rc.ray.origin, rc.ray.direction, drawStart.P, drawStart.N);
+    if(p) rectB=snapCorner(p, px, py);
+    finalizeDraw();
+  }
 }
 function drawMoveEvt(e){
-  if(drawStage!==1) return;
+  if(drawStage!==1 && drawStage!==2) return;
   const r=dom.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
   setNDC(px,py); rc.setFromCamera(ndc,camera);
   const p=rayPlane(rc.ray.origin, rc.ray.direction, drawStart.P, drawStart.N); if(!p) return;
@@ -1376,11 +1387,16 @@ function drawMoveEvt(e){
 }
 function drawUp(e){
   if(e.button!==0 || drawStage!==1) return;
-  const dsp=rectB.clone().sub(rectA);
-  if(Math.abs(dsp.dot(drawStart.T1))<spanScale*0.01 || Math.abs(dsp.dot(drawStart.T2))<spanScale*0.01){
-    cancelDraw(); toast('Rectangle too small — try again', true); return; }
-  drawStage=3; rebuildPending();
-  applyDraw();                       // apply the cut/add immediately on release
+  const moved = drawDownXY ? Math.hypot(e.clientX-(dom.getBoundingClientRect().left+drawDownXY.x), e.clientY-(dom.getBoundingClientRect().top+drawDownXY.y)) : 0;
+  if(moved>6) finalizeDraw();                  // it was a drag → apply on release
+  else drawStage=2;                            // it was a click → wait for the second click
+}
+function finalizeDraw(){
+  const small = drawShape==='circle'
+    ? rectA.distanceTo(rectB) < spanScale*0.01
+    : (Math.abs(rectB.clone().sub(rectA).dot(drawStart.T1))<spanScale*0.01 || Math.abs(rectB.clone().sub(rectA).dot(drawStart.T2))<spanScale*0.01);
+  if(small){ cancelDraw(); toast('Too small — try again', true); return; }
+  drawStage=3; rebuildPending(); applyDraw();
 }
 function applyDraw(){
   if(drawStage!==3 || !pendingBox || !currentMesh){ return; }
