@@ -81,6 +81,9 @@
   #toast.show{opacity:1;}
   #toast.err{border-color:#ff5630; color:#ff9c8a;}
 
+  #marquee{position:fixed; z-index:13; border:1.5px dashed var(--accent);
+    background:rgba(76,154,255,.14); pointer-events:none; display:none;}
+  #marquee.sub{border-color:#ff6b6b; background:rgba(255,107,107,.14);}
   .rev{font-size:11px; font-weight:700; letter-spacing:.02em; background:var(--panel-2);
     border:1px solid var(--border); color:var(--sub); padding:4px 9px; border-radius:11px;
     white-space:nowrap; text-decoration:none;}
@@ -146,7 +149,7 @@
   <button id="axes" class="active">Axes</button>
   <label class="inline">Color <input type="color" id="color" value="#8ab4ff"></label>
   <label class="inline">BG <input type="color" id="bgcolor" value="#1b1d23"></label>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Draw: apply cut/add on release + feature snapping">rev 7</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Move mode: head-on view + Ctrl/Shift+drag marquee select">rev 8</a>
 </div>
 
 <div class="info" id="info">
@@ -177,6 +180,7 @@
 </div>
 
 <div class="drop-hint" id="drophint"><div>Drop STL / 3MF / OBJ / PLY here</div></div>
+<div id="marquee"></div>
 <div id="toast"></div>
 
 <script type="importmap">
@@ -332,6 +336,7 @@ function fitGridTo(span){
 }
 
 function frameObject(size){
+  camAnim=null; camera.up.set(0,0,1);      // restore Z-up (a flatten may have changed it)
   const maxDim = Math.max(size.x, size.y, size.z, 10);
   const dist = maxDim * 2.1;
   controls.target.set(0,0,size.z/2);
@@ -670,8 +675,8 @@ const hud=document.getElementById('hud');
 function updateHud(){
   let t='';
   if(mode==='move') t = selection
-      ? '<b>MOVE</b> drag an axis handle to push/pull · click another face to reselect · Esc'
-      : '<b>MOVE</b> click a flat face to select it';
+      ? '<b>MOVE</b> drag an axis to push/pull · <b>Ctrl+drag</b> add / <b>Shift+drag</b> remove a rectangle (snaps to edges) · Esc'
+      : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
       : '<b>OBJECT</b> click a part — a weakly-attached blob is chopped at its narrowest neck';
@@ -761,12 +766,85 @@ function buildSelection(faceIndex){        // level-0 helper (used by tests)
   const g=gatherCoplanar(faceIndex); applyFaceSelection(g.tris, g.N, g.T1, g.T2);
 }
 
+let faceWork=null;                 // {allTris,N,T1,T2} — the coplanar face being edited
+let camAnim=null;                  // smooth flatten-to-face camera animation
 function selectFaceAt(px,py){
   const hit=raycastModel(px,py);
   if(!hit){ clearSelection(); return; }
   const g=gatherCoplanar(hit.faceIndex);
+  faceWork={allTris:g.tris, N:g.N.clone(), T1:g.T1.clone(), T2:g.T2.clone()};
   applyFaceSelection(g.tris, g.N, g.T1, g.T2);
-  toast(g.tris.length+' tris — face selected · drag the blue (normal) axis to push/pull');
+  flattenToFace(g.N, g.T2, selection.anchor.clone());
+  toast(g.tris.length+' tris selected · rotating head-on — Ctrl+drag adds, Shift+drag removes a rectangle');
+}
+// animate the camera to look straight down the face normal (planar view)
+function flattenToFace(N, T2, centroid){
+  const dist=Math.max(camera.position.distanceTo(controls.target), spanScale*0.9);
+  camera.up.copy(T2);              // tangent → never degenerate, keeps the face upright-ish
+  camAnim={ fp:camera.position.clone(), tp:centroid.clone().addScaledVector(N,dist),
+            ft:controls.target.clone(), tt:centroid.clone(), t:0 };
+}
+
+// ---------- marquee sub-selection (Ctrl=add, Shift=remove), snapped to strong edges ----------
+let marquee=null;
+const marqueeEl=document.getElementById('marquee');
+function computeStrongPts(){                 // endpoints of sharp / boundary edges
+  if(!currentGeometry) return [];
+  const pos=currentGeometry.getAttribute('position'); if(pos.count>200000) return [];
+  const topo=buildTopo(); const nrm=[]; const n=new THREE.Vector3();
+  for(let t=0;t<topo.nT;t++){ triNormal(pos,t,n); nrm.push(n.clone()); }
+  const seen=new Set(), pts=[];
+  const add=(id)=>{ if(!seen.has(id)){ seen.add(id); pts.push(topo.weldPos[id]); } };
+  for(const [k,tris] of topo.edgeTris){
+    const strong = tris.length!==2 || nrm[tris[0]].angleTo(nrm[tris[1]])>Math.PI/6;
+    if(!strong) continue;
+    const i=k.indexOf('|'); add(+k.slice(0,i)); add(+k.slice(i+1));
+  }
+  return pts;
+}
+function snapScreen(px,py){                   // snap to nearest strong-edge point, with auto-backoff
+  if(!marquee || !marquee.snapOn || !marquee.pts.length) return {x:px,y:py};
+  let best=null, bd=Math.max(12, dom.clientWidth*0.013);
+  for(const p of marquee.pts){ const s=worldToScreenLocal(p); const d=Math.hypot(s.x-px,s.y-py);
+    if(d<bd){ bd=d; best=s; } }
+  if(best){ marquee.wasSnap=true; return {x:best.x, y:best.y}; }
+  if(marquee.wasSnap){ marquee.wasSnap=false; if(++marquee.escapes>=3){ marquee.snapOn=false;
+    toast('Edge snapping off for this selection'); } }
+  return {x:px,y:py};
+}
+function startMarquee(px,py,ctrl){
+  if(!faceWork){ return false; }
+  controls.enabled=false;
+  marquee={mode:ctrl?'add':'sub', pts:computeStrongPts(), snapOn:true, wasSnap:false, escapes:0};
+  const s=snapScreen(px,py); marquee.x0=s.x; marquee.y0=s.y; marquee.x1=s.x; marquee.y1=s.y;
+  marqueeEl.className = ctrl?'':'sub'; drawMarquee(); return true;
+}
+function moveMarquee(px,py){ if(!marquee) return; const s=snapScreen(px,py); marquee.x1=s.x; marquee.y1=s.y; drawMarquee(); }
+function drawMarquee(){
+  const r=dom.getBoundingClientRect();
+  const x0=Math.min(marquee.x0,marquee.x1), y0=Math.min(marquee.y0,marquee.y1);
+  marqueeEl.style.display='block';
+  marqueeEl.style.left=(r.left+x0)+'px'; marqueeEl.style.top=(r.top+y0)+'px';
+  marqueeEl.style.width=Math.abs(marquee.x1-marquee.x0)+'px'; marqueeEl.style.height=Math.abs(marquee.y1-marquee.y0)+'px';
+}
+function endMarquee(){
+  if(!marquee) return; controls.enabled=true; marqueeEl.style.display='none';
+  const x0=Math.min(marquee.x0,marquee.x1),x1=Math.max(marquee.x0,marquee.x1);
+  const y0=Math.min(marquee.y0,marquee.y1),y1=Math.max(marquee.y0,marquee.y1);
+  if(x1-x0>3 && y1-y0>3 && faceWork){
+    const pos=currentGeometry.getAttribute('position'); const sel=new Set(selection?selection.tris:[]);
+    const cen=new THREE.Vector3();
+    for(const t of faceWork.allTris){
+      a.fromBufferAttribute(pos,t*3);b.fromBufferAttribute(pos,t*3+1);c.fromBufferAttribute(pos,t*3+2);
+      cen.set((a.x+b.x+c.x)/3,(a.y+b.y+c.y)/3,(a.z+b.z+c.z)/3);
+      const s=worldToScreenLocal(cen);
+      if(s.x>=x0&&s.x<=x1&&s.y>=y0&&s.y<=y1){ marquee.mode==='add'?sel.add(t):sel.delete(t); }
+    }
+    if(sel.size) applyFaceSelection([...sel], faceWork.N, faceWork.T1, faceWork.T2);
+    else { clearSelection(); faceWork=null; toast('Selection emptied'); }
+    if(sel.size) toast((marquee.mode==='add'?'Added to':'Removed from')+' selection — '+sel.size+' tris');
+  }
+  marquee=null;
 }
 function onGizmoChange(){
   if(!selection) return;
@@ -797,7 +875,7 @@ function updateHighlight(){
 }
 function removeHighlight(){ if(highlightMesh){ currentObject.remove(highlightMesh);
   highlightMesh.geometry.dispose(); highlightMesh.material.dispose(); highlightMesh=null; } }
-function clearSelection(){ removeHighlight(); selection=null; tc.visible=false; tc.enabled=false; }
+function clearSelection(){ removeHighlight(); selection=null; faceWork=null; tc.visible=false; tc.enabled=false; }
 
 function updateDims(){
   if(!currentGeometry) return;
@@ -1206,8 +1284,11 @@ function applyDraw(){
 let downPos=null, downTime=0;
 dom.addEventListener('pointerdown', e=>{
   if(mode==='draw'){ drawDown(e); return; }
+  if(mode==='move' && selection && e.button===0 && (e.shiftKey||e.ctrlKey||e.metaKey)){
+    const r=dom.getBoundingClientRect(); if(startMarquee(e.clientX-r.left, e.clientY-r.top, e.ctrlKey||e.metaKey)) return; }
   if(e.button!==0) return; downPos={x:e.clientX,y:e.clientY}; downTime=performance.now(); });
 dom.addEventListener('pointerup', e=>{
+  if(marquee){ endMarquee(); return; }
   if(mode==='draw'){ drawUp(e); return; }
   if(e.button!==0) return;
   const wasDrag=justDragged; justDragged=false;
@@ -1222,6 +1303,7 @@ dom.addEventListener('pointerup', e=>{
   else selectRulerAt(px,py);
 });
 dom.addEventListener('pointermove', e=>{
+  if(marquee){ const r=dom.getBoundingClientRect(); moveMarquee(e.clientX-r.left, e.clientY-r.top); return; }
   if(mode==='draw'){ drawMoveEvt(e); return; }
   if(mode==='ruler' && rulerPhase===1){ const r=dom.getBoundingClientRect(); updatePreview(e.clientX-r.left, e.clientY-r.top); }
 });
@@ -1258,7 +1340,13 @@ function onModelLoaded(size){ clearSelection(); clearAllRulers(); setMode('view'
 
 function animate(){
   requestAnimationFrame(animate);
-  controls.update();
+  if(camAnim){
+    camAnim.t=Math.min(1, camAnim.t+0.07); const e=camAnim.t*camAnim.t*(3-2*camAnim.t);
+    camera.position.lerpVectors(camAnim.fp, camAnim.tp, e);
+    controls.target.lerpVectors(camAnim.ft, camAnim.tt, e);
+    camera.lookAt(controls.target);
+    if(camAnim.t>=1){ camAnim=null; controls.update(); }
+  } else controls.update();
   renderer.render(scene, camera);
   updateLabels();
 }
