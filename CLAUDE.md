@@ -10,4 +10,4 @@ Every page shows a `rev N` badge in the top-right (`<a class="rev" ...>rev N</a>
 `rev N` by exactly 1 in all three files, in the same commit.** It's a plain monotonic counter
 (matches the commit count), so a viewer can tell which build is live. Never skip or reuse.
 
-Current: **rev 13**.
+Current: **rev 14**.

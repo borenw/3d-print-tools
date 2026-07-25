@@ -115,15 +115,15 @@
   }
   #hud.show{opacity:1;}
   #hud b{background:rgba(255,255,255,.22); padding:1px 6px; border-radius:4px;}
-  #choppanel{position:fixed; top:96px; left:50%; transform:translateX(-50%); z-index:12;
+  #choppanel,#shrinkpanel{position:fixed; top:96px; left:50%; transform:translateX(-50%); z-index:12;
     background:rgba(35,38,46,.96); border:1px solid var(--border); border-radius:8px;
     padding:6px 12px; font-size:13px; display:none; align-items:center; gap:8px; color:var(--text);}
-  #choppanel.show{display:flex;}
-  #choppanel button{padding:3px 9px;}
+  #choppanel.show,#shrinkpanel.show{display:flex;}
+  #choppanel button,#shrinkpanel button{padding:3px 9px;}
   #choppanel button.active{background:var(--blue); border-color:var(--blue); color:#fff;}
-  #choppanel input{width:78px; background:var(--panel-2); border:1px solid var(--border); color:var(--text);
-    border-radius:5px; padding:3px 6px; font:inherit;}
-  #choppanel .sub{color:var(--sub); font-size:12px;}
+  #choppanel input,#shrinkpanel input{width:66px; background:var(--panel-2); border:1px solid var(--border);
+    color:var(--text); border-radius:5px; padding:3px 6px; font:inherit;}
+  #choppanel .sub,#shrinkpanel .sub{color:var(--sub); font-size:12px;}
 
   /* floating measurement labels */
   .ruler-label{
@@ -160,9 +160,10 @@
   <label class="inline">BG <input type="color" id="bgcolor" value="#1b1d23"></label>
   <button id="inverse" title="Inverse / negative — carve the shape out of its bounding block (Ctrl+I)">🔃 Inverse</button>
   <button id="chop" title="Interactive chop — hover the half to keep, click a plane (X/Y/Z) to switch, Enter to apply">✂ Chop</button>
+  <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Circle/rect draw, delete face, numeric chop (Ctrl+O)">rev 13</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Shrink X/Y/Z (or all) by mm">rev 14</a>
 </div>
 
 <div class="info" id="info">
@@ -193,6 +194,15 @@
   <button data-ax="x">X</button><button data-ax="y">Y</button><button data-ax="z">Z</button>
   <span>=</span><input id="chopval" type="number" step="any"><span class="sub">mm</span>
   <span class="sub">· hover the half to keep · Enter applies · Esc</span>
+</div>
+<div id="shrinkpanel">
+  <span class="sub">Shrink (mm)</span>
+  X<input id="shrinkX" type="number" step="any" placeholder="0">
+  Y<input id="shrinkY" type="number" step="any" placeholder="0">
+  Z<input id="shrinkZ" type="number" step="any" placeholder="0">
+  <span class="sub">or all</span><input id="shrinkAll" type="number" step="any" placeholder="">
+  <button id="shrinkApplyBtn">Apply</button>
+  <span class="sub" id="shrinkClose" style="cursor:pointer">✕</span>
 </div>
 
 <div class="controls-legend">
@@ -1635,6 +1645,35 @@ function applyChopNow(){
 }
 document.getElementById('inverse').onclick=invertShape;
 document.getElementById('chop').onclick=()=>{ chopMode?applyChopNow():enterChop(); };
+
+// ---------- shrink / contract dimensions by mm (scale about the centre) ----------
+const shrinkPanel=document.getElementById('shrinkpanel');
+function shrinkApply(){
+  if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh)',true); return; }
+  const all=parseFloat(document.getElementById('shrinkAll').value);
+  const useAll=!isNaN(all);
+  const dx=useAll?all:(parseFloat(document.getElementById('shrinkX').value)||0);
+  const dy=useAll?all:(parseFloat(document.getElementById('shrinkY').value)||0);
+  const dz=useAll?all:(parseFloat(document.getElementById('shrinkZ').value)||0);
+  if(!dx&&!dy&&!dz){ toast('Enter a shrink amount (mm)',true); return; }
+  pushUndo();
+  currentGeometry.computeBoundingBox(); const b=currentGeometry.boundingBox;
+  const s=new THREE.Vector3(); b.getSize(s); const c=new THREE.Vector3(); b.getCenter(c);
+  const f=(size,d)=> size>1e-6 ? Math.max(0.001,(size-d)/size) : 1;
+  const m=new THREE.Matrix4().makeTranslation(c.x,c.y,c.z)
+    .multiply(new THREE.Matrix4().makeScale(f(s.x,dx), f(s.y,dy), f(s.z,dz)))
+    .multiply(new THREE.Matrix4().makeTranslation(-c.x,-c.y,-c.z));
+  currentGeometry.applyMatrix4(m); currentGeometry.computeVertexNormals(); currentGeometry.computeBoundingBox();
+  clearSelection(); updateDims();
+  toast('Shrunk by X '+dx+' · Y '+dy+' · Z '+dz+' mm');
+}
+document.getElementById('shrinkbtn').onclick=()=>{
+  if(!currentGeometry){ toast('Load a mesh first',true); return; }
+  shrinkPanel.classList.toggle('show');
+};
+document.getElementById('shrinkApplyBtn').onclick=shrinkApply;
+document.getElementById('shrinkClose').onclick=()=>shrinkPanel.classList.remove('show');
+shrinkPanel.querySelectorAll('input').forEach(i=>i.addEventListener('keydown',e=>{ if(e.key==='Enter') shrinkApply(); }));
 
 // preload: ?model=<url> wins; else your last-opened file; else the bundled sample
 const _q=new URLSearchParams(location.search).get('model');
