@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Easy Support — 4× smaller contact, clean removal</title>
+<style>
+  :root{
+    --blue:#0052CC; --blue-dark:#003D99; --bg:#1b1d23; --panel:#23262e;
+    --panel-2:#2b2f39; --border:#3a3f4b; --text:#e6e9ef; --sub:#9aa3b2;
+    --accent:#4c9aff; --orange:#ff8b00; --green:#36b37e;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;overflow:hidden;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); display:flex;}
+  #canvas-wrap{position:relative; flex:1; min-width:0;}
+  canvas{display:block;}
+
+  .topbar{position:absolute; top:0; left:0; right:0; z-index:10;
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:8px 12px; background:rgba(27,29,35,.82); backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--border);}
+  .brand{font-weight:600; font-size:15px;}
+  .brand a{color:var(--accent); text-decoration:none;}
+  button,.filebtn,select{font:inherit; font-size:13px; color:var(--text);
+    background:var(--panel-2); border:1px solid var(--border);
+    padding:6px 11px; border-radius:7px; cursor:pointer;}
+  button:hover,.filebtn:hover,select:hover{border-color:var(--accent);}
+  input[type=file]{display:none;}
+
+  .sidebar{width:320px; background:var(--panel); border-left:1px solid var(--border);
+    display:flex; flex-direction:column; overflow-y:auto; z-index:11;}
+  .sidebar h2{font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--sub); padding:14px 16px 6px;}
+  .tabs{display:flex; padding:10px 12px 0; gap:6px;}
+  .tab{flex:1; text-align:center; padding:9px 8px; border-radius:8px 8px 0 0;
+    background:var(--panel-2); border:1px solid var(--border); border-bottom:none;
+    cursor:pointer; font-size:13px; color:var(--sub);}
+  .tab.active{background:var(--blue); color:#fff; border-color:var(--blue);}
+  .panel{display:none; padding:14px 16px; border-top:1px solid var(--border);}
+  .panel.active{display:block;}
+
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:12px; color:var(--sub); margin-bottom:5px;}
+  .field .val{color:var(--accent); font-weight:600;}
+  input[type=range]{width:100%;}
+  .field .hint{font-size:11px; color:var(--sub); margin-top:3px; line-height:1.4;}
+
+  .primary{width:100%; background:var(--blue); border-color:var(--blue); color:#fff;
+    font-weight:600; padding:11px; font-size:14px; margin-top:4px;}
+  .primary:hover{background:var(--blue-dark);}
+  .exportrow{display:flex; gap:8px; margin-top:10px;}
+  .exportrow button{flex:1;}
+  .exportrow button:disabled{opacity:.4; cursor:not-allowed;}
+
+  .results{margin:14px 16px; background:var(--panel-2); border:1px solid var(--border);
+    border-radius:10px; padding:12px 14px; font-size:13px;}
+  .results .big{font-size:26px; font-weight:700; color:var(--green); line-height:1.1;}
+  .results .big.warn{color:var(--orange);}
+  .results .row{display:flex; justify-content:space-between; padding:3px 0; color:var(--sub);}
+  .results .row b{color:var(--text); font-variant-numeric:tabular-nums;}
+
+  .objlist{margin:0 16px 14px; font-size:13px;}
+  .objlist .obj{display:flex; align-items:center; gap:8px; padding:6px 8px;
+    background:var(--panel-2); border:1px solid var(--border); border-radius:7px; margin-bottom:6px;}
+  .objlist .obj input{margin:0;}
+  .objlist .obj .n{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .objlist .obj .t{color:var(--sub); font-size:11px;}
+
+  .legend{position:absolute; left:12px; bottom:12px; z-index:10; font-size:12px;
+    background:rgba(35,38,46,.9); border:1px solid var(--border); border-radius:10px; padding:10px 12px;}
+  .legend .sw{display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:6px; vertical-align:middle;}
+  .legend .k{display:inline-block; background:var(--panel-2); border:1px solid var(--border);
+    border-radius:4px; padding:0 5px; font-size:11px;}
+
+  #toast{position:absolute; top:60px; left:50%; transform:translateX(-50%); z-index:20;
+    background:var(--panel); border:1px solid var(--border); padding:9px 16px; border-radius:8px;
+    font-size:13px; opacity:0; transition:opacity .25s; pointer-events:none; max-width:70vw; text-align:center;}
+  #toast.show{opacity:1;}
+  #toast.err{border-color:#ff5630; color:#ff9c8a;}
+  .spin{position:absolute; inset:0; z-index:15; display:none; align-items:center; justify-content:center;
+    background:rgba(27,29,35,.5); font-size:15px;}
+  .spin.show{display:flex;}
+</style>
+</head>
+<body>
+<div id="canvas-wrap">
+  <div class="topbar">
+    <span class="brand"><a href="index.html">🖨️ 3D Print Tools</a> · Easy Support</span>
+    <label class="filebtn">📂 Open .3mf / .stl
+      <input type="file" id="file" accept=".stl,.3mf,.obj,.ply">
+    </label>
+    <select id="sample">
+      <option value="">Samples…</option>
+      <option value="samples/2x2_ver1.3mf">2x2_ver1.3mf</option>
+      <option value="builtin:overhang">▲ Test overhang (built-in)</option>
+    </select>
+  </div>
+  <div class="legend">
+    <div><span class="sw" style="background:#8a8f99"></span>Model
+       &nbsp;<span class="sw" style="background:#ff8b00"></span>Support
+       &nbsp;<span class="sw" style="background:#ff3b30"></span>Contact patch</div>
+    <div style="margin-top:5px; color:var(--sub);"><span class="k">L-drag</span> orbit
+       <span class="k">Mid-drag</span> pan <span class="k">Wheel</span> zoom</div>
+  </div>
+  <div id="toast"></div>
+  <div class="spin" id="spin">⏳ Computing supports…</div>
+</div>
+
+<div class="sidebar">
+  <div class="tabs">
+    <div class="tab active" data-tab="gen">Generate</div>
+    <div class="tab" data-tab="mod">Modify existing</div>
+  </div>
+
+  <!-- GENERATE -->
+  <div class="panel active" id="panel-gen">
+    <div class="field">
+      <label>Overhang threshold: <span class="val" id="v-ang">45</span>°</label>
+      <input type="range" id="p-ang" min="20" max="80" value="45" step="1">
+      <div class="hint">Down-facing surfaces overhanging more than this from vertical get supports (45° = the classic rule).</div>
+    </div>
+    <div class="field">
+      <label>Support spacing: <span class="val" id="v-sp">4.0</span> mm</label>
+      <input type="range" id="p-sp" min="2" max="12" value="4" step="0.5">
+      <div class="hint">Grid pitch between support pillars. Larger = fewer supports.</div>
+    </div>
+    <div class="field">
+      <label>Contact reduction: <span class="val" id="v-red">4.0</span>×</label>
+      <input type="range" id="p-red" min="1" max="9" value="4" step="0.5">
+      <div class="hint">Tip contact area vs. a standard flat tip. 4× → half the tip diameter.</div>
+    </div>
+    <div class="field">
+      <label>Reference tip Ø: <span class="val" id="v-ref">0.8</span> mm</label>
+      <input type="range" id="p-ref" min="0.4" max="2" value="0.8" step="0.1">
+      <div class="hint">A normal support's contact diameter. The slim tip = this ÷ √(reduction).</div>
+    </div>
+    <div class="field">
+      <label>Base Ø: <span class="val" id="v-base">1.6</span> mm</label>
+      <input type="range" id="p-base" min="0.8" max="4" value="1.6" step="0.1">
+      <div class="hint">Pillar base diameter for stability. Tips taper up to the slim contact.</div>
+    </div>
+    <button class="primary" id="gen-btn">⚙️ Generate supports</button>
+    <div class="exportrow">
+      <button id="exp-3mf" disabled>⬇ .3mf</button>
+      <button id="exp-stl" disabled>⬇ .stl</button>
+    </div>
+  </div>
+
+  <!-- MODIFY -->
+  <div class="panel" id="panel-mod">
+    <div class="hint" style="margin-bottom:10px;">Works when the file contains supports as a <b>separate object</b> (multi-body .3mf). Tick the objects that are supports, then pinch their top contact band.</div>
+    <div class="objlist" id="objlist"><div class="hint">Load a file to list its objects…</div></div>
+    <div class="field">
+      <label>Contact reduction: <span class="val" id="v-mred">4.0</span>×</label>
+      <input type="range" id="p-mred" min="1" max="9" value="4" step="0.5">
+    </div>
+    <div class="field">
+      <label>Top band pinched: <span class="val" id="v-band">1.0</span> mm</label>
+      <input type="range" id="p-band" min="0.3" max="4" value="1.0" step="0.1">
+      <div class="hint">Height below each support's top that gets tapered inward.</div>
+    </div>
+    <button class="primary" id="mod-btn">✂️ Slim tagged supports</button>
+    <div class="exportrow">
+      <button id="mexp-3mf" disabled>⬇ .3mf</button>
+      <button id="mexp-stl" disabled>⬇ .stl</button>
+    </div>
+  </div>
+
+  <div class="results" id="results" style="display:none;">
+    <div class="big" id="r-ratio">—</div>
+    <div style="color:var(--sub); margin-bottom:8px;">contact area reduction</div>
+    <div class="row"><span>Supports placed</span><b id="r-count">—</b></div>
+    <div class="row"><span>Slim tip Ø</span><b id="r-tip">—</b></div>
+    <div class="row"><span>Total contact area</span><b id="r-area">—</b></div>
+    <div class="row"><span>vs. standard tips</span><b id="r-std">—</b></div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "fflate": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { zipSync, strToU8 } from 'fflate';
+
+// ---------- scene ----------
+const wrap = document.getElementById('canvas-wrap');
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+wrap.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1d23);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100000);
+camera.up.set(0,0,1);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.mouseButtons = { LEFT:THREE.MOUSE.ROTATE, MIDDLE:THREE.MOUSE.PAN, RIGHT:THREE.MOUSE.PAN };
+controls.touches = { ONE:THREE.TOUCH.ROTATE, TWO:THREE.TOUCH.DOLLY_PAN };
+scene.add(new THREE.HemisphereLight(0xffffff,0x404050,1.1));
+const key=new THREE.DirectionalLight(0xffffff,1.4); key.position.set(1,-1,2); scene.add(key);
+const fill=new THREE.DirectionalLight(0xffffff,0.5); fill.position.set(-1,1,0.5); scene.add(fill);
+let grid=new THREE.GridHelper(200,20,0x4c9aff,0x333844); grid.rotation.x=Math.PI/2; scene.add(grid);
+scene.add(new THREE.AxesHelper(40));
+
+const modelMat = new THREE.MeshStandardMaterial({color:0x8a8f99, roughness:0.6, metalness:0, side:THREE.DoubleSide});
+const supMat   = new THREE.MeshStandardMaterial({color:0xff8b00, roughness:0.5, metalness:0, side:THREE.DoubleSide});
+
+let modelMesh=null, supportMesh=null, contactPts=null;   // scene objects
+let modelGeo=null, supportGeo=null;                       // exportable geometries (on-plate coords)
+let rawGroup=null;                                        // loaded group for modify mode
+
+function sz(){
+  const w=wrap.clientWidth, h=wrap.clientHeight;
+  renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', sz); sz();
+
+function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene,camera); }
+animate();
+
+// ---------- ui helpers ----------
+const toastEl=document.getElementById('toast'); let tT;
+function toast(m,e){ toastEl.textContent=m; toastEl.classList.toggle('err',!!e);
+  toastEl.classList.add('show'); clearTimeout(tT); tT=setTimeout(()=>toastEl.classList.remove('show'), e?5000:2600); }
+const spin=document.getElementById('spin');
+const showSpin=b=>spin.classList.toggle('show',b);
+function fmt(n,d=2){ return (Math.round(n*Math.pow(10,d))/Math.pow(10,d)).toLocaleString(); }
+
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById('panel-'+t.dataset.tab).classList.add('active');
+});
+const bind=(id,vid,suf='')=>{ const el=document.getElementById(id), v=document.getElementById(vid);
+  const upd=()=>v.textContent=el.value; el.addEventListener('input',upd); upd(); };
+bind('p-ang','v-ang'); bind('p-sp','v-sp'); bind('p-red','v-red'); bind('p-ref','v-ref');
+bind('p-base','v-base'); bind('p-mred','v-mred'); bind('p-band','v-band');
+
+// ---------- geometry utils ----------
+function groupToWorldGeometry(root){
+  root.updateMatrixWorld(true);
+  const geos=[];
+  root.traverse(o=>{ if(o.isMesh&&o.geometry){
+    const g=o.geometry.clone(); g.applyMatrix4(o.matrixWorld);
+    const keep=new THREE.BufferGeometry();
+    keep.setAttribute('position', g.getAttribute('position'));
+    if(g.index) keep.setIndex(g.index);
+    geos.push(keep.toNonIndexed());
+  }});
+  if(!geos.length) return null;
+  return BufferGeometryUtils.mergeGeometries(geos,false);
+}
+
+// reduce any geometry to a position-only, non-indexed geometry so merges never
+// fail on mismatched attribute sets (model has no uv; cylinders do)
+function positionOnly(geo){
+  const g=geo.index?geo.toNonIndexed():geo.clone();
+  const out=new THREE.BufferGeometry();
+  out.setAttribute('position', g.getAttribute('position').clone());
+  return out;
+}
+
+// procedural overhang bracket: a flat slab on two thin legs — the slab underside
+// is a large unsupported overhang, so Generate always has something to do.
+function buildOverhangTest(){
+  const boxes=[
+    new THREE.BoxGeometry(3,3,20).translate(-15,0,10),
+    new THREE.BoxGeometry(3,3,20).translate( 15,0,10),
+    new THREE.BoxGeometry(44,14,3).translate(0,0,21.5)
+  ].map(positionOnly);
+  const g=BufferGeometryUtils.mergeGeometries(boxes,false);
+  g.computeVertexNormals();
+  const grp=new THREE.Group(); grp.add(new THREE.Mesh(g,modelMat)); return grp;
+}
+
+// place a geometry so it rests on z=0, centered in XY; returns {geo,size}
+function normalizeToPlate(geo){
+  geo.computeBoundingBox();
+  const b=geo.boundingBox, c=new THREE.Vector3(); b.getCenter(c);
+  geo.translate(-c.x,-c.y,-b.min.z);
+  geo.computeBoundingBox(); geo.computeVertexNormals();
+  const size=new THREE.Vector3(); geo.boundingBox.getSize(size);
+  return size;
+}
+
+function frame(size){
+  const m=Math.max(size.x,size.y,size.z,10), d=m*2.1;
+  controls.target.set(0,0,size.z/2);
+  camera.position.set(d*0.7,-d*0.9,d*0.7+size.z/2);
+  camera.near=m/100; camera.far=m*50; camera.updateProjectionMatrix(); controls.update();
+  scene.remove(grid);
+  const s=Math.ceil(Math.max(size.x,size.y,40)*1.6/10)*10;
+  grid=new THREE.GridHelper(s,Math.max(10,Math.round(s/10)),0x4c9aff,0x333844);
+  grid.rotation.x=Math.PI/2; scene.add(grid);
+}
+
+function clearScene(){
+  for(const o of [modelMesh,supportMesh,contactPts]){ if(o){ scene.remove(o);
+    if(o.geometry) o.geometry.dispose(); } }
+  modelMesh=supportMesh=contactPts=null; supportGeo=null;
+  document.getElementById('results').style.display='none';
+  for(const id of ['exp-3mf','exp-stl','mexp-3mf','mexp-stl']) document.getElementById(id).disabled=true;
+}
+
+// ---------- loading ----------
+function parseToGroup(buffer, filename){
+  const ext=filename.split('.').pop().toLowerCase();
+  if(ext==='stl'){ const g=new STLLoader().parse(buffer);
+    const m=new THREE.Mesh(g,modelMat); const grp=new THREE.Group(); grp.add(m); return grp; }
+  if(ext==='3mf'){ return new ThreeMFLoader().parse(buffer); }
+  if(ext==='obj'){ return new OBJLoader().parse(new TextDecoder().decode(buffer)); }
+  if(ext==='ply'){ const g=new PLYLoader().parse(buffer);
+    const m=new THREE.Mesh(g,modelMat); const grp=new THREE.Group(); grp.add(m); return grp; }
+  throw new Error('Unsupported format .'+ext);
+}
+
+function showGroup(group, name){
+  clearScene();
+  rawGroup = group;
+  modelGeo = groupToWorldGeometry(rawGroup);
+  if(!modelGeo){ toast('No mesh found', true); return; }
+  const size = normalizeToPlate(modelGeo);
+  modelMesh = new THREE.Mesh(modelGeo, modelMat); scene.add(modelMesh);
+  frame(size);
+  buildObjectList(rawGroup);
+  currentName = name.replace(/\.[^.]+$/,'');
+  toast('Loaded '+name+' — '+fmt(size.x)+'×'+fmt(size.y)+'×'+fmt(size.z)+' mm');
+}
+
+function loadBuffer(buffer, filename){
+  try{
+    clearScene();
+    rawGroup = parseToGroup(buffer, filename);
+    modelGeo = groupToWorldGeometry(rawGroup);
+    if(!modelGeo){ toast('No mesh found in file', true); return; }
+    const size = normalizeToPlate(modelGeo);
+    modelMesh = new THREE.Mesh(modelGeo, modelMat); scene.add(modelMesh);
+    frame(size);
+    buildObjectList(rawGroup);
+    currentName = filename.replace(/\.[^.]+$/,'');
+    toast('Loaded '+filename+' — '+fmt(size.x)+'×'+fmt(size.y)+'×'+fmt(size.z)+' mm');
+  }catch(e){ console.error(e); toast('Load failed: '+e.message, true); }
+}
+let currentName='model';
+
+function loadFile(file){ const r=new FileReader();
+  r.onload=()=>loadBuffer(r.result,file.name); r.onerror=()=>toast('Read error',true);
+  r.readAsArrayBuffer(file); }
+async function loadURL(url){ try{ const res=await fetch(url); if(!res.ok) throw new Error('HTTP '+res.status);
+  loadBuffer(await res.arrayBuffer(), url.split('/').pop()); }
+  catch(e){ toast('Fetch failed (serve via http, not file://)', true); } }
+
+document.getElementById('file').addEventListener('change',e=>{ if(e.target.files[0]) loadFile(e.target.files[0]); });
+document.getElementById('sample').addEventListener('change',e=>{
+  const v=e.target.value; if(!v) return;
+  if(v==='builtin:overhang') showGroup(buildOverhangTest(), 'overhang_test');
+  else loadURL(v);
+});
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{ e.preventDefault(); if(e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
+
+// object list for modify mode
+function buildObjectList(root){
+  const list=document.getElementById('objlist'); list.innerHTML='';
+  const meshes=[]; root.traverse(o=>{ if(o.isMesh) meshes.push(o); });
+  if(meshes.length<=1){
+    list.innerHTML='<div class="hint">This file is a single combined mesh — no separable supports. Use <b>Generate</b> mode instead.</div>';
+    modMeshes=[]; return;
+  }
+  modMeshes=meshes;
+  meshes.forEach((m,i)=>{
+    const tri=(m.geometry.index?m.geometry.index.count:m.geometry.getAttribute('position').count)/3;
+    const row=document.createElement('div'); row.className='obj';
+    row.innerHTML=`<input type="checkbox" data-i="${i}"><span class="n">${m.name||('Object '+(i+1))}</span><span class="t">${fmt(tri,0)} tri</span>`;
+    list.appendChild(row);
+  });
+}
+let modMeshes=[];
+
+// ---------- GENERATE ----------
+function faceNormal(a,b,c,out){
+  const ux=b.x-a.x,uy=b.y-a.y,uz=b.z-a.z, vx=c.x-a.x,vy=c.y-a.y,vz=c.z-a.z;
+  out.set(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx).normalize(); return out;
+}
+
+function generateSupports(){
+  if(!modelGeo){ toast('Load a model first', true); return; }
+  showSpin(true);
+  setTimeout(()=>{ try{ doGenerate(); } catch(e){ console.error(e); toast('Generate failed: '+e.message,true); }
+    finally{ showSpin(false); } }, 30);
+}
+
+function doGenerate(){
+  const angDeg=+document.getElementById('p-ang').value;
+  const spacing=+document.getElementById('p-sp').value;
+  const reduction=+document.getElementById('p-red').value;
+  const refDia=+document.getElementById('p-ref').value;
+  const baseDia=+document.getElementById('p-base').value;
+
+  const rTip = (refDia/Math.sqrt(reduction))/2;   // slim contact radius
+  const rBase= baseDia/2;
+  const minGap = 1.0;                              // don't support gaps under 1mm
+  const plateEps = 0.3;                            // faces this close to plate rest on it
+  // support if angle of face-normal from straight-down < (90 - angDeg)  ==>  downComp > sin(angDeg)
+  const downThresh = Math.sin(angDeg*Math.PI/180);
+
+  const pos = modelGeo.getAttribute('position');
+  const pA=new THREE.Vector3(),pB=new THREE.Vector3(),pC=new THREE.Vector3(),fn=new THREE.Vector3();
+  // geometric (flat) normal Z at a raycast hit, from its vertex indices
+  function hitNormalZ(h){
+    if(!h.face) return 0;
+    pA.fromBufferAttribute(pos,h.face.a); pB.fromBufferAttribute(pos,h.face.b); pC.fromBufferAttribute(pos,h.face.c);
+    faceNormal(pA,pB,pC,fn); return fn.z;
+  }
+
+  // Sample a grid across the model footprint and cast a ray straight DOWN each
+  // column. Placing supports per-column (not per-triangle) means a large flat
+  // overhang made of a few big triangles still gets full support density.
+  const box = modelGeo.boundingBox;                 // set by normalizeToPlate()
+  const ray=new THREE.Raycaster(); ray.far=1e6;
+  // DoubleSide so a downward ray registers overhang undersides (which are
+  // back-faces to a top-down ray) as hits, not just the outer top surfaces.
+  const rayMesh=new THREE.Mesh(modelGeo, new THREE.MeshBasicMaterial({side:THREE.DoubleSide}));
+  const down=new THREE.Vector3(0,0,-1);
+  const topZ = box.max.z + 5;
+  const origin=new THREE.Vector3();
+  const pillars=[]; const contacts=[];
+  const MAX_PTS=20000;
+
+  for(let x=box.min.x+spacing/2; x<box.max.x; x+=spacing){
+    for(let y=box.min.y+spacing/2; y<box.max.y; y+=spacing){
+      if(pillars.length>MAX_PTS) break;
+      origin.set(x,y,topZ); ray.set(origin,down);
+      const hits=ray.intersectObject(rayMesh,false);   // sorted top -> down
+      if(!hits.length) continue;
+      // walk down through the surfaces; first DOWN-facing one is an overhang ceiling
+      for(let hi=0; hi<hits.length; hi++){
+        const nz=hitNormalZ(hits[hi]);
+        if(-nz <= downThresh) continue;                // not a steep down-face
+        const topPt=hits[hi].point.z;
+        if(topPt<=plateEps) break;                     // ceiling sits on the plate
+        // landing = next surface below with a real gap, else the build plate (z=0)
+        let landZ=0;
+        for(let hj=hi+1; hj<hits.length; hj++){
+          if(hits[hj].point.z < topPt-0.05){ landZ=hits[hj].point.z; break; }
+        }
+        const h=topPt-landZ;
+        if(h<minGap) break;                            // gap too small to bother
+        pillars.push({x,y,top:topPt,bottom:landZ,h});
+        contacts.push(new THREE.Vector3(x,y,topPt));
+        break;                                         // one support per column
+      }
+    }
+  }
+
+  if(!pillars.length){ toast('No overhangs need support at '+angDeg+'° — try a lower threshold', true);
+    if(supportMesh){scene.remove(supportMesh);supportMesh=null;}
+    if(contactPts){scene.remove(contactPts);contactPts=null;}
+    document.getElementById('results').style.display='none'; return; }
+
+  // 3) build tapered pillar geometry (slim tip -> wide base)
+  const parts=[];
+  const neck=0.4; // short straight slim neck right under the contact for a clean break
+  for(const p of pillars){
+    const total=p.h;
+    const neckH=Math.min(neck,total*0.4);
+    // slim neck cylinder (rTip constant) at the top
+    const gNeck=new THREE.CylinderGeometry(rTip,rTip,neckH,10,1);
+    gNeck.rotateX(Math.PI/2); // Y-axis -> Z-axis
+    gNeck.translate(p.x,p.y,p.top-neckH/2);
+    parts.push(gNeck);
+    // tapered body from rTip (top) to rBase (bottom)
+    const bodyH=total-neckH;
+    if(bodyH>0.05){
+      const gBody=new THREE.CylinderGeometry(rTip,rBase,bodyH,10,1);
+      gBody.rotateX(Math.PI/2);
+      gBody.translate(p.x,p.y,p.bottom+bodyH/2);
+      parts.push(gBody);
+    }
+  }
+  supportGeo = BufferGeometryUtils.mergeGeometries(parts,false);
+  supportGeo.computeVertexNormals();
+
+  // 4) update scene
+  if(supportMesh){ scene.remove(supportMesh); supportMesh.geometry.dispose(); }
+  supportMesh=new THREE.Mesh(supportGeo,supMat); scene.add(supportMesh);
+  if(contactPts){ scene.remove(contactPts); contactPts.geometry.dispose(); }
+  const cg=new THREE.SphereGeometry(Math.max(rTip*0.9,0.15),8,6);
+  contactPts=new THREE.InstancedMesh(cg,new THREE.MeshBasicMaterial({color:0xff3b30}),contacts.length);
+  const mtx=new THREE.Matrix4();
+  contacts.forEach((v,i)=>{ mtx.makeTranslation(v.x,v.y,v.z); contactPts.setMatrixAt(i,mtx); });
+  scene.add(contactPts);
+
+  // 5) results
+  const tipArea=Math.PI*rTip*rTip;
+  const refArea=Math.PI*(refDia/2)*(refDia/2);
+  const ratio=refArea/tipArea;
+  showResults(ratio, pillars.length, rTip*2, tipArea*pillars.length, refArea*pillars.length);
+  document.getElementById('exp-3mf').disabled=false;
+  document.getElementById('exp-stl').disabled=false;
+  toast(pillars.length+' supports · contact reduced '+fmt(ratio,1)+'×');
+}
+
+function showResults(ratio,count,tipDia,totArea,stdArea){
+  document.getElementById('results').style.display='block';
+  const rr=document.getElementById('r-ratio');
+  rr.textContent=fmt(ratio,1)+'×'; rr.classList.toggle('warn',ratio<3.5);
+  document.getElementById('r-count').textContent=fmt(count,0);
+  document.getElementById('r-tip').textContent=fmt(tipDia,2)+' mm';
+  document.getElementById('r-area').textContent=fmt(totArea,1)+' mm²';
+  document.getElementById('r-std').textContent=fmt(stdArea,1)+' mm²';
+}
+
+document.getElementById('gen-btn').onclick=generateSupports;
+
+// ---------- MODIFY existing supports ----------
+function slimTagged(){
+  const checked=[...document.querySelectorAll('#objlist input:checked')].map(x=>+x.dataset.i);
+  if(!modMeshes.length){ toast('No separable objects — use Generate mode', true); return; }
+  if(!checked.length){ toast('Tick which objects are supports first', true); return; }
+  const reduction=+document.getElementById('p-mred').value;
+  const band=+document.getElementById('p-band').value;
+  const shrink=1/Math.sqrt(reduction);            // XY scale of the top band -> area × 1/reduction
+
+  let touched=0;
+  for(const i of checked){
+    const mesh=modMeshes[i];
+    const g=mesh.geometry; const p=g.getAttribute('position');
+    g.computeBoundingBox();
+    const maxZ=g.boundingBox.max.z;
+    // centroid of the top band (contact footprint)
+    let sx=0,sy=0,cnt=0;
+    for(let k=0;k<p.count;k++){ const z=p.getZ(k); if(z>=maxZ-band){ sx+=p.getX(k); sy+=p.getY(k); cnt++; } }
+    if(!cnt) continue;
+    const cx=sx/cnt, cy=sy/cnt;
+    for(let k=0;k<p.count;k++){
+      const z=p.getZ(k);
+      if(z>=maxZ-band){
+        // fade the pinch from 0 at band bottom to full at the very top
+        const t=(z-(maxZ-band))/band;               // 0..1
+        const s=1-(1-shrink)*t;
+        p.setX(k, cx+(p.getX(k)-cx)*s);
+        p.setY(k, cy+(p.getY(k)-cy)*s);
+      }
+    }
+    p.needsUpdate=true; g.computeVertexNormals(); touched++;
+  }
+  if(!touched){ toast('Selected objects had no top band', true); return; }
+
+  // rebuild displayed model geometry from the (now modified) group
+  if(modelMesh){ scene.remove(modelMesh); modelMesh.geometry.dispose(); }
+  modelGeo=groupToWorldGeometry(rawGroup); const size=normalizeToPlate(modelGeo);
+  modelMesh=new THREE.Mesh(modelGeo,modelMat); scene.add(modelMesh); frame(size);
+
+  document.getElementById('results').style.display='block';
+  const rr=document.getElementById('r-ratio'); rr.textContent=fmt(reduction,1)+'×'; rr.classList.remove('warn');
+  document.getElementById('r-count').textContent=touched+' obj';
+  document.getElementById('r-tip').textContent='×'+fmt(shrink,2)+' XY';
+  document.getElementById('r-area').textContent='top '+fmt(band,1)+' mm';
+  document.getElementById('r-std').textContent='—';
+  document.getElementById('mexp-3mf').disabled=false;
+  document.getElementById('mexp-stl').disabled=false;
+  supportGeo=null; // modify mode exports the whole model
+  toast('Slimmed '+touched+' support object(s) by '+fmt(reduction,1)+'×');
+}
+document.getElementById('mod-btn').onclick=slimTagged;
+
+// ---------- EXPORT ----------
+function geoToArrays(geo){
+  const g=geo.index?geo.toNonIndexed():geo;
+  const p=g.getAttribute('position');
+  const verts=[]; const tris=[];
+  // weld identical vertices to keep the 3MF small & manifold-friendly
+  const map=new Map(); const idx=k=>{
+    const x=p.getX(k),y=p.getY(k),z=p.getZ(k);
+    const key=x.toFixed(4)+'_'+y.toFixed(4)+'_'+z.toFixed(4);
+    let id=map.get(key);
+    if(id===undefined){ id=verts.length/3; verts.push(x,y,z); map.set(key,id); }
+    return id;
+  };
+  for(let k=0;k<p.count;k+=3) tris.push(idx(k),idx(k+1),idx(k+2));
+  return {verts,tris};
+}
+
+function meshXML(objId, geo, type){
+  const {verts,tris}=geoToArrays(geo);
+  let v='';
+  for(let i=0;i<verts.length;i+=3) v+=`<vertex x="${verts[i]}" y="${verts[i+1]}" z="${verts[i+2]}"/>`;
+  let t='';
+  for(let i=0;i<tris.length;i+=3) t+=`<triangle v1="${tris[i]}" v2="${tris[i+1]}" v3="${tris[i+2]}"/>`;
+  return `<object id="${objId}" type="${type||'model'}"><mesh><vertices>${v}</vertices><triangles>${t}</triangles></mesh></object>`;
+}
+
+function build3MF(objects){
+  // objects: [{geo,type}]
+  let res='', items='';
+  objects.forEach((o,i)=>{ const id=i+1; res+=meshXML(id,o.geo,o.type); items+=`<item objectid="${id}"/>`; });
+  const model=`<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<resources>${res}</resources>
+<build>${items}</build>
+</model>`;
+  const ct=`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>`;
+  const rels=`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>`;
+  const zip=zipSync({
+    '[Content_Types].xml':strToU8(ct),
+    '_rels/.rels':strToU8(rels),
+    '3D/3dmodel.model':strToU8(model)
+  },{level:6});
+  return new Blob([zip],{type:'model/3mf'});
+}
+
+function stlBlob(geo){
+  const g=geo.index?geo.toNonIndexed():geo;
+  const p=g.getAttribute('position'); const nTri=p.count/3;
+  const buf=new ArrayBuffer(84+nTri*50); const dv=new DataView(buf);
+  let off=84; dv.setUint32(80,nTri,true);
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),n=new THREE.Vector3();
+  for(let i=0;i<p.count;i+=3){
+    a.fromBufferAttribute(p,i); b.fromBufferAttribute(p,i+1); c.fromBufferAttribute(p,i+2);
+    faceNormal(a,b,c,n);
+    dv.setFloat32(off,n.x,true);dv.setFloat32(off+4,n.y,true);dv.setFloat32(off+8,n.z,true); off+=12;
+    for(const v of [a,b,c]){ dv.setFloat32(off,v.x,true);dv.setFloat32(off+4,v.y,true);dv.setFloat32(off+8,v.z,true); off+=12; }
+    dv.setUint16(off,0,true); off+=2;
+  }
+  return new Blob([buf],{type:'model/stl'});
+}
+
+function download(blob,name){
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+
+// generate-mode exports: model + supports as two objects
+document.getElementById('exp-3mf').onclick=()=>{
+  if(!modelGeo||!supportGeo){ toast('Generate supports first',true); return; }
+  download(build3MF([{geo:modelGeo,type:'model'},{geo:supportGeo,type:'model'}]), currentName+'_easysupport.3mf');
+  toast('Exported '+currentName+'_easysupport.3mf');
+};
+document.getElementById('exp-stl').onclick=()=>{
+  if(!modelGeo||!supportGeo){ toast('Generate supports first',true); return; }
+  const merged=BufferGeometryUtils.mergeGeometries([positionOnly(modelGeo), positionOnly(supportGeo)],false) || modelGeo;
+  download(stlBlob(merged), currentName+'_easysupport.stl');
+  toast('Exported '+currentName+'_easysupport.stl');
+};
+// modify-mode exports: whole (modified) model
+document.getElementById('mexp-3mf').onclick=()=>{
+  if(!modelGeo){ toast('Load & slim a file first',true); return; }
+  download(build3MF([{geo:modelGeo,type:'model'}]), currentName+'_slimmed.3mf');
+  toast('Exported '+currentName+'_slimmed.3mf');
+};
+document.getElementById('mexp-stl').onclick=()=>{
+  if(!modelGeo){ toast('Load & slim a file first',true); return; }
+  download(stlBlob(modelGeo), currentName+'_slimmed.stl');
+  toast('Exported '+currentName+'_slimmed.stl');
+};
+
+// preload sample; #demo auto-runs the built-in overhang through Generate
+if(location.hash==='#demo'){
+  // shareable demo link: load the built-in overhang and auto-generate supports
+  showGroup(buildOverhangTest(),'overhang_test');
+  setTimeout(generateSupports, 500);
+} else {
+  loadURL('samples/2x2_ver1.3mf');
+}
+</script>
+</body>
+</html>
