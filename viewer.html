@@ -170,7 +170,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="On-screen debug log + draw-tool activation & highlight fixes">rev 18</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Fix side-face push/pull (tilt flatten view) + move debug">rev 19</a>
 </div>
 
 <div class="info" id="info">
@@ -772,11 +772,15 @@ tc.setMode('translate'); tc.setSize(0.85);
 let justDragged=false;
 tc.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value;
   if(e.value){ justDragged=true; if(selection && currentGeometry) pushUndo(); }
-  else if(selection && selection.kind==='face' && pushMode==='extrude'){   // bake the new walls on release
+  else if(selection){
     const disp=gizmoProxy.position.clone().sub(selection.anchor);
-    if(wallMesh && disp.length()>1e-3){ bakeWalls();
-      if(faceWork) applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2); }
-    else removeWalls();
+    currentGeometry.computeBoundingBox(); const s=new THREE.Vector3(); currentGeometry.boundingBox.getSize(s);
+    dbg('move end: '+(selection.kind)+'/'+pushMode+' moved='+disp.length().toFixed(1)+'mm size='+s.x.toFixed(1)+'x'+s.y.toFixed(1)+'x'+s.z.toFixed(1));
+    if(selection.kind==='face' && pushMode==='extrude'){                    // bake the new walls on release
+      if(wallMesh && disp.length()>1e-3){ bakeWalls();
+        if(faceWork) applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2); }
+      else removeWalls();
+    }
   } });
 tc.addEventListener('objectChange', onGizmoChange);
 tc.attach(gizmoProxy); tc.visible=false; tc.enabled=false;
@@ -843,10 +847,11 @@ function selectFaceAt(px,py){
 // animate the camera to look straight down the face normal (planar view)
 function flattenToFace(N, T2, centroid){
   const dist=Math.max(camera.position.distanceTo(controls.target), spanScale*0.9);
-  // keep world Z as up so orbit stays free (no locked axis); for near-vertical
-  // faces, tilt a touch off the Z pole so the view isn't at the orbit singularity
-  let dir=N.clone();
-  if(Math.abs(N.z)>0.96) dir=new THREE.Vector3(0.34,0.05,Math.sign(N.z||1)*0.94).normalize();
+  // Tilt ~23° off the normal (toward the surface tangent). Nearly head-on for
+  // marquee editing, but the push/pull normal axis still projects to the screen
+  // enough to grab — a fully head-on view points that axis at the camera and it
+  // becomes undraggable (which made side-face push/pull look "stuck").
+  const dir=N.clone().addScaledVector(T2, 0.42).normalize();
   camera.up.set(0,0,1);
   camAnim={ fp:camera.position.clone(), tp:centroid.clone().addScaledVector(dir,dist),
             ft:controls.target.clone(), tt:centroid.clone(), t:0 };
