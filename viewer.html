@@ -80,6 +80,43 @@
   }
   #toast.show{opacity:1;}
   #toast.err{border-color:#ff5630; color:#ff9c8a;}
+
+  /* editor toolbox (left rail) */
+  .toolbox{
+    position:fixed; left:12px; top:64px; z-index:12;
+    display:flex; flex-direction:column; gap:6px;
+    background:rgba(35,38,46,.92); border:1px solid var(--border);
+    border-radius:12px; padding:7px;
+  }
+  .toolbox button{
+    width:40px; height:40px; padding:0; font-size:18px; line-height:1;
+    display:flex; align-items:center; justify-content:center; position:relative;
+  }
+  .toolbox button .kbd{
+    position:absolute; right:2px; bottom:1px; font-size:9px; color:var(--sub);
+  }
+  .toolbox .sep{height:1px; background:var(--border); margin:2px 2px;}
+  .toolbox button.del{color:#ff8a8a;}
+
+  /* mode HUD */
+  #hud{
+    position:fixed; top:60px; left:50%; transform:translateX(-50%); z-index:11;
+    background:rgba(0,82,204,.9); color:#fff; border-radius:8px;
+    padding:7px 14px; font-size:12.5px; opacity:0; transition:opacity .2s;
+    pointer-events:none; white-space:nowrap; max-width:92vw;
+  }
+  #hud.show{opacity:1;}
+  #hud b{background:rgba(255,255,255,.22); padding:1px 6px; border-radius:4px;}
+
+  /* floating measurement labels */
+  .ruler-label{
+    position:fixed; z-index:9; transform:translate(-50%,-50%);
+    background:rgba(20,22,28,.92); border:1px solid #ffd43b; color:#ffe08a;
+    font-size:12px; font-variant-numeric:tabular-nums; padding:2px 7px;
+    border-radius:6px; pointer-events:none; white-space:nowrap;
+  }
+  .ruler-label.sel{border-color:#ff6b6b; color:#ffb3b3; box-shadow:0 0 0 2px rgba(255,107,107,.4);}
+  .ruler-label.preview{opacity:.9; border-style:dashed;}
 </style>
 </head>
 <body>
@@ -114,9 +151,20 @@
   <div class="row"><span>Size Z</span><span id="i-z">—</span></div>
 </div>
 
+<div class="toolbox" id="toolbox">
+  <button id="t-view" class="active" title="Select / Orbit (Esc)">✋</button>
+  <button id="t-move" title="Move a flat face — click a surface, drag an axis to push/pull (M)">✥<span class="kbd">M</span></button>
+  <button id="t-obj" title="Select object — click a part; a weakly-attached blob is chopped at its narrowest neck (O)">🧩<span class="kbd">O</span></button>
+  <button id="t-ruler" title="Ruler — click a start surface, then an end point (K)">📏<span class="kbd">K</span></button>
+  <div class="sep"></div>
+  <button id="t-del" class="del" title="Delete selected ruler / object (Del)">🗑</button>
+</div>
+
+<div id="hud"></div>
+
 <div class="controls-legend">
   <div><span class="k">L-drag</span> orbit &nbsp; <span class="k">Mid-drag</span> pan &nbsp; <span class="k">Wheel</span> zoom</div>
-  <div style="margin-top:4px;">Right-drag also pans · drag &amp; drop a file anywhere</div>
+  <div style="margin-top:4px;"><span class="k">M</span> move face · <span class="k">K</span> ruler · <span class="k">Esc</span> cancel · drop a file anywhere</div>
 </div>
 
 <div class="drop-hint" id="drophint"><div>Drop STL / 3MF / OBJ / PLY here</div></div>
@@ -139,6 +187,7 @@ import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ---------- scene ----------
@@ -178,6 +227,8 @@ scene.add(grid);
 let axes = new THREE.AxesHelper(60); scene.add(axes);
 
 let currentObject = null;
+let currentMesh = null, currentGeometry = null;
+let spanScale = 100;                 // ~model size, used to scale gizmos/pick tolerances
 const material = new THREE.MeshStandardMaterial({
   color:0x8ab4ff, roughness:0.55, metalness:0.0, side:THREE.DoubleSide, flatShading:false
 });
@@ -238,6 +289,9 @@ function displayGeometry(geometry, name){
   currentObject = new THREE.Group();
   currentObject.add(mesh);
   scene.add(currentObject);
+  currentMesh = mesh; currentGeometry = geometry;
+  spanScale = Math.max(size.x, size.y, size.z, 10);
+  if(typeof onModelLoaded === 'function') onModelLoaded(size);
 
   // info
   const tris = geometry.getAttribute('position').count / 3;
@@ -341,18 +395,20 @@ async function loadFromURL(url){
 document.getElementById('file').addEventListener('change', e=>{
   if(e.target.files[0]) loadFromFile(e.target.files[0]);
 });
+function loadBuiltinOverhang(){
+  const boxes=[
+    new THREE.BoxGeometry(3,3,20).translate(-15,0,10),
+    new THREE.BoxGeometry(3,3,20).translate( 15,0,10),
+    new THREE.BoxGeometry(44,14,3).translate(0,0,21.5)
+  ];
+  const g=BufferGeometryUtils.mergeGeometries(boxes,false);
+  displayGeometry(g.toNonIndexed(), 'overhang_test');
+  toast('Loaded built-in overhang test');
+}
 document.getElementById('sample').addEventListener('change', e=>{
   const v=e.target.value; if(!v) return;
-  if(v==='builtin:overhang'){
-    const boxes=[
-      new THREE.BoxGeometry(3,3,20).translate(-15,0,10),
-      new THREE.BoxGeometry(3,3,20).translate( 15,0,10),
-      new THREE.BoxGeometry(44,14,3).translate(0,0,21.5)
-    ];
-    const g=BufferGeometryUtils.mergeGeometries(boxes,false);
-    displayGeometry(g.toNonIndexed(), 'overhang_test');
-    toast('Loaded built-in overhang test');
-  } else loadFromURL(v);
+  if(v==='builtin:overhang') loadBuiltinOverhang();
+  else loadFromURL(v);
 });
 document.getElementById('fit').onclick = ()=>{
   if(currentObject){
@@ -395,10 +451,411 @@ window.addEventListener('resize', ()=>{
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ============================================================================
+//  EDITOR: flat-face select + push/pull move, and surface-relative ruler
+// ============================================================================
+const dom = renderer.domElement;
+const rc = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+
+function faceNormal(p0,p1,p2,out){
+  const ux=p1.x-p0.x,uy=p1.y-p0.y,uz=p1.z-p0.z, vx=p2.x-p0.x,vy=p2.y-p0.y,vz=p2.z-p0.z;
+  out.set(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx).normalize(); return out;
+}
+function setNDC(px,py){ ndc.x=(px/dom.clientWidth)*2-1; ndc.y=-(py/dom.clientHeight)*2+1; }
+function worldToScreenLocal(v){ const p=v.clone().project(camera);
+  return { x:(p.x*0.5+0.5)*dom.clientWidth, y:(-p.y*0.5+0.5)*dom.clientHeight, z:p.z }; }
+function worldToScreenPage(v){ const p=v.clone().project(camera); const r=dom.getBoundingClientRect();
+  return { x:r.left+(p.x*0.5+0.5)*r.width, y:r.top+(-p.y*0.5+0.5)*r.height, z:p.z }; }
+function makeTangents(N,T1,T2){
+  const ref = Math.abs(N.z)<0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0);
+  T1.crossVectors(ref,N).normalize(); T2.crossVectors(N,T1).normalize();
+}
+function raycastModel(px,py){ if(!currentMesh) return null;
+  setNDC(px,py); rc.setFromCamera(ndc,camera); return rc.intersectObject(currentMesh,false)[0]||null; }
+
+// ---------- mode + HUD ----------
+let mode='view';                                   // 'view' | 'move' | 'ruler'
+const hud=document.getElementById('hud');
+function updateHud(){
+  let t='';
+  if(mode==='move') t = selection
+      ? '<b>MOVE</b> drag an axis handle to push/pull · click another face to reselect · Esc'
+      : '<b>MOVE</b> click a flat face to select it';
+  else if(mode==='object') t = (selection&&selection.kind==='object')
+      ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
+      : '<b>OBJECT</b> click a part — a weakly-attached blob is chopped at its narrowest neck';
+  else if(mode==='ruler') t = (rulerPhase===1)
+      ? '<b>RULER</b> click to set the end · nearest axis snaps, go off-axis for free · Esc'
+      : '<b>RULER</b> click a surface to set the start point';
+  else if(selectedRuler) t = '<b>SELECTED</b> ruler '+selectedRuler.dist.toFixed(2)+' mm · Del to delete';
+  hud.innerHTML=t; hud.classList.toggle('show', !!t);
+}
+function setMode(m){
+  mode=m;
+  document.getElementById('t-view').classList.toggle('active', m==='view');
+  document.getElementById('t-move').classList.toggle('active', m==='move');
+  document.getElementById('t-obj').classList.toggle('active', m==='object');
+  document.getElementById('t-ruler').classList.toggle('active', m==='ruler');
+  if(m!=='move' && m!=='object') clearSelection();
+  if(m!=='ruler'){ rulerPhase=0; rulerFrame=null; removePreview(); }
+  updateHud();
+}
+document.getElementById('t-view').onclick =()=>setMode('view');
+document.getElementById('t-move').onclick =()=>setMode('move');
+document.getElementById('t-obj').onclick  =()=>setMode('object');
+document.getElementById('t-ruler').onclick=()=>setMode('ruler');
+document.getElementById('t-del').onclick  =()=>{
+  if(selection && selection.kind==='object') deleteSelectedObject();
+  else if(selectedRuler) deleteSelectedRuler();
+  else toast('Select a ruler or an object first, then delete'); };
+
+// ---------- push/pull gizmo ----------
+const gizmoProxy=new THREE.Object3D(); scene.add(gizmoProxy);
+const tc=new TransformControls(camera, dom);
+tc.setMode('translate'); tc.setSize(0.85);
+let justDragged=false;
+tc.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value; if(e.value) justDragged=true; });
+tc.addEventListener('objectChange', onGizmoChange);
+tc.attach(gizmoProxy); tc.visible=false; tc.enabled=false;
+scene.add(tc);
+
+let selection=null, highlightMesh=null;
+const keyOf=(x,y,z)=>Math.round(x*1000)+'_'+Math.round(y*1000)+'_'+Math.round(z*1000);
+function triNormal(pos,t,out){ const i=t*3;
+  a.fromBufferAttribute(pos,i); b.fromBufferAttribute(pos,i+1); c.fromBufferAttribute(pos,i+2);
+  return faceNormal(a,b,c,out); }
+
+function selectFaceAt(px,py){
+  const hit=raycastModel(px,py);
+  if(!hit){ clearSelection(); return; }
+  buildSelection(hit.faceIndex);
+}
+function buildSelection(faceIndex){
+  const pos=currentGeometry.getAttribute('position');
+  const N=new THREE.Vector3(); triNormal(pos,faceIndex,N);
+  a.fromBufferAttribute(pos, faceIndex*3); const D=N.dot(a);
+  const normTol=0.996, dTol=Math.max(0.02, spanScale*0.003);
+  const tmp=new THREE.Vector3(), tris=[]; const nTris=pos.count/3;
+  for(let t=0;t<nTris;t++){
+    triNormal(pos,t,tmp);
+    if(tmp.dot(N) < normTol) continue;
+    a.fromBufferAttribute(pos,t*3);
+    if(Math.abs(N.dot(a)-D) > dTol) continue;
+    tris.push(t);
+  }
+  const keys=new Set(); const centroid=new THREE.Vector3(); let cc=0;
+  for(const t of tris){ for(let k=0;k<3;k++){ a.fromBufferAttribute(pos,t*3+k);
+    keys.add(keyOf(a.x,a.y,a.z)); centroid.add(a); cc++; } }
+  centroid.multiplyScalar(1/cc);
+  const movable=[];
+  for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i);
+    if(keys.has(keyOf(a.x,a.y,a.z))) movable.push(i); }
+  selection={ tris, movableIdx:movable, origArray:Float32Array.from(pos.array), anchor:centroid.clone(), kind:'face' };
+
+  const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
+  gizmoProxy.position.copy(centroid);
+  gizmoProxy.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(T1,T2,N));
+  tc.setSpace('local'); tc.visible=true; tc.enabled=true;
+  buildHighlight();
+  toast(tris.length+' triangles selected · drag the blue (normal) axis to push/pull');
+  updateHud();
+}
+function onGizmoChange(){
+  if(!selection) return;
+  const disp=gizmoProxy.position.clone().sub(selection.anchor);
+  const pos=currentGeometry.getAttribute('position'); const arr=pos.array, orig=selection.origArray;
+  for(const idx of selection.movableIdx){ const o=idx*3;
+    arr[o]=orig[o]+disp.x; arr[o+1]=orig[o+1]+disp.y; arr[o+2]=orig[o+2]+disp.z; }
+  pos.needsUpdate=true;
+  currentGeometry.computeVertexNormals();
+  updateHighlight(); updateDims();
+}
+function buildHighlight(color=0x00e5ff){
+  removeHighlight(); if(!selection) return;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(selection.tris.length*9),3));
+  highlightMesh=new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+    color, transparent:true, opacity:0.45, side:THREE.DoubleSide,
+    depthTest:true, polygonOffset:true, polygonOffsetFactor:-1, polygonOffsetUnits:-1 }));
+  highlightMesh.renderOrder=1; currentObject.add(highlightMesh); updateHighlight();
+}
+function updateHighlight(){
+  if(!highlightMesh||!selection) return;
+  const src=currentGeometry.getAttribute('position').array;
+  const dst=highlightMesh.geometry.getAttribute('position'); let w=0;
+  for(const t of selection.tris){ for(let k=0;k<3;k++){ const o=(t*3+k)*3;
+    dst.array[w++]=src[o]; dst.array[w++]=src[o+1]; dst.array[w++]=src[o+2]; } }
+  dst.needsUpdate=true; highlightMesh.geometry.computeVertexNormals();
+}
+function removeHighlight(){ if(highlightMesh){ currentObject.remove(highlightMesh);
+  highlightMesh.geometry.dispose(); highlightMesh.material.dispose(); highlightMesh=null; } }
+function clearSelection(){ removeHighlight(); selection=null; tc.visible=false; tc.enabled=false; }
+
+function updateDims(){
+  if(!currentGeometry) return;
+  currentGeometry.computeBoundingBox();
+  const s=new THREE.Vector3(); currentGeometry.boundingBox.getSize(s);
+  document.getElementById('i-x').textContent=fmt(s.x)+' mm';
+  document.getElementById('i-y').textContent=fmt(s.y)+' mm';
+  document.getElementById('i-z').textContent=fmt(s.z)+' mm';
+}
+
+// ---------- object select (connectivity) + auto-chop at narrowest neck ----------
+// Build a welded topology (shared-position vertices) so we can flood-fill
+// connected components and sweep for the thinnest cross-section.
+function buildTopo(){
+  const pos=currentGeometry.getAttribute('position'); const nV=pos.count, nT=nV/3;
+  const map=new Map(); const weldPos=[]; const weld=new Int32Array(nV);
+  for(let i=0;i<nV;i++){ a.fromBufferAttribute(pos,i); const k=keyOf(a.x,a.y,a.z);
+    let id=map.get(k); if(id===undefined){ id=weldPos.length; weldPos.push(a.clone()); map.set(k,id); } weld[i]=id; }
+  const triW=new Int32Array(nT*3);
+  for(let t=0;t<nT*3;t++) triW[t]=weld[t];
+  const edgeTris=new Map();
+  const ek=(u,v)=> u<v ? u+'|'+v : v+'|'+u;
+  const addE=(u,v,t)=>{ const k=ek(u,v); let arr=edgeTris.get(k); if(!arr){arr=[];edgeTris.set(k,arr);} arr.push(t); };
+  for(let t=0;t<nT;t++){ const A=triW[t*3],B=triW[t*3+1],C=triW[t*3+2]; addE(A,B,t);addE(B,C,t);addE(C,A,t); }
+  return {weldPos,triW,edgeTris,nT};
+}
+function componentOf(topo,startTri,blocked){
+  const seen=new Uint8Array(topo.nT); const stack=[startTri]; seen[startTri]=1; const out=[startTri];
+  while(stack.length){ const t=stack.pop();
+    const A=topo.triW[t*3],B=topo.triW[t*3+1],C=topo.triW[t*3+2];
+    const es=[[A,B],[B,C],[C,A]];
+    for(const [u,v] of es){ const k=u<v?u+'|'+v:v+'|'+u; if(blocked&&blocked.has(k)) continue;
+      const arr=topo.edgeTris.get(k); if(!arr) continue;
+      for(const nt of arr){ if(!seen[nt]){ seen[nt]=1; out.push(nt); stack.push(nt); } } } }
+  return out;
+}
+function findChop(topo,P){
+  // unique welded edges with lengths
+  const edges=[];
+  for(const [k] of topo.edgeTris){ const i=k.indexOf('|'); const u=+k.slice(0,i), v=+k.slice(i+1);
+    edges.push({u,v,len:topo.weldPos[u].distanceTo(topo.weldPos[v])}); }
+  const axesList=[new THREE.Vector3(1,0,0),new THREE.Vector3(0,1,0),new THREE.Vector3(0,0,1)];
+  let best=null;
+  for(const A of axesList){
+    const proj=topo.weldPos.map(p=>p.dot(A));
+    let mn=Infinity,mx=-Infinity; for(const v of proj){ if(v<mn)mn=v; if(v>mx)mx=v; }
+    const span=mx-mn; if(span<1e-3) continue;
+    const pP=P.dot(A); const STEPS=64; const costs=[];
+    for(let i=1;i<STEPS;i++){ const s=mn+span*i/STEPS;
+      let cost=0; for(const e of edges){ if((proj[e.u]<s)!==(proj[e.v]<s)) cost+=e.len; }
+      let cntL=0; for(const v of proj){ if(v<s) cntL++; }
+      costs.push({s,cost,cntL,total:proj.length,pLeft:pP<s});
+    }
+    const sortedC=costs.map(c=>c.cost).slice().sort((x,y)=>x-y);
+    const med=sortedC[Math.floor(sortedC.length/2)]||1;
+    for(const c of costs){
+      if(c.cost<=1e-6) continue;
+      const minority=Math.min(c.cntL,c.total-c.cntL);
+      if(minority<3) continue;
+      const pOnSmall=(c.pLeft?c.cntL:c.total-c.cntL)<=c.total/2;
+      const score=c.cost*(pOnSmall?1:1.6);
+      if(c.cost < 0.5*med && (!best||score<best.score)) best={axis:A,s:c.s,cost:c.cost,score};
+    }
+  }
+  if(!best) return null;
+  const blocked=new Set(); const proj=topo.weldPos.map(p=>p.dot(best.axis));
+  for(const [k] of topo.edgeTris){ const i=k.indexOf('|'); const u=+k.slice(0,i), v=+k.slice(i+1);
+    if((proj[u]<best.s)!==(proj[v]<best.s)) blocked.add(k); }
+  return {blocked,cost:best.cost};
+}
+function selectObjectAt(px,py){
+  const hit=raycastModel(px,py); if(!hit){ clearSelection(); return; }
+  if(currentGeometry.getAttribute('position').count/3 > 120000){
+    toast('Mesh too large for object chop', true); return; }
+  const topo=buildTopo();
+  const comp=componentOf(topo, hit.faceIndex, null);
+  if(comp.length < topo.nT){ setObjectSelection(comp);
+    toast('Selected a standalone object ('+comp.length+' triangles)'); return; }
+  const cut=findChop(topo, hit.point);
+  if(!cut){ setObjectSelection(comp); toast('No clear neck found — selected the whole body'); return; }
+  const blob=componentOf(topo, hit.faceIndex, cut.blocked);
+  if(blob.length>=topo.nT){ setObjectSelection(comp); toast('Cut did not separate — whole body'); return; }
+  setObjectSelection(blob);
+  toast('Chopped at narrowest neck — '+blob.length+' triangles, cut ≈ '+cut.cost.toFixed(1)+' mm. Drag to detach, Del to remove.');
+}
+function setObjectSelection(tris){
+  const pos=currentGeometry.getAttribute('position');
+  const movable=[]; const centroid=new THREE.Vector3(); let cc=0;
+  for(const t of tris){ for(let k=0;k<3;k++){ const vi=t*3+k; movable.push(vi);
+    a.fromBufferAttribute(pos,vi); centroid.add(a); cc++; } }
+  centroid.multiplyScalar(1/cc);
+  selection={ tris, movableIdx:movable, origArray:Float32Array.from(pos.array), anchor:centroid.clone(), kind:'object' };
+  gizmoProxy.position.copy(centroid); gizmoProxy.quaternion.identity();
+  tc.setSpace('world'); tc.visible=true; tc.enabled=true;
+  buildHighlight(0xff5bd0);
+  updateHud();
+}
+function deleteSelectedObject(){
+  if(!selection||selection.kind!=='object') return;
+  const keep=new Set(selection.tris);
+  const pos=currentGeometry.getAttribute('position'); const src=pos.array; const nT=pos.count/3;
+  const out=[];
+  for(let t=0;t<nT;t++){ if(keep.has(t)) continue; const o=t*9; for(let j=0;j<9;j++) out.push(src[o+j]); }
+  const ng=new THREE.BufferGeometry();
+  ng.setAttribute('position', new THREE.Float32BufferAttribute(out,3)); ng.computeVertexNormals();
+  currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
+  clearSelection(); updateDims();
+  document.getElementById('i-tris').textContent=fmt(ng.getAttribute('position').count/3);
+  toast('Object deleted');
+}
+
+// ---------- ruler ----------
+const rulers=[]; let rulerPhase=0, rulerFrame=null, preview=null, selectedRuler=null;
+
+function distPointToLine(p,a2,b2){
+  const vx=b2.x-a2.x, vy=b2.y-a2.y, wx=p.x-a2.x, wy=p.y-a2.y;
+  const L2=vx*vx+vy*vy; if(L2<1e-6) return Math.hypot(wx,wy);
+  return Math.abs(wx*vy-wy*vx)/Math.sqrt(L2);
+}
+function closestParamOnLine(O,Dr,P,u){       // param t on line P+u*t closest to ray O+Dr*s
+  const w0x=P.x-O.x,w0y=P.y-O.y,w0z=P.z-O.z;
+  const A=Dr.dot(Dr), B=Dr.x*u.x+Dr.y*u.y+Dr.z*u.z, C=u.dot(u);
+  const Dp=Dr.x*w0x+Dr.y*w0y+Dr.z*w0z, E=u.x*w0x+u.y*w0y+u.z*w0z;
+  const den=A*C-B*B; if(Math.abs(den)<1e-9) return E/C;
+  return (A*E-B*Dp)/den;
+}
+function rulerEnd(px,py){
+  const S=rulerFrame.S;
+  setNDC(px,py); rc.setFromCamera(ndc,camera);
+  const O=rc.ray.origin, Dr=rc.ray.direction;
+  const axes=[{d:rulerFrame.T1,l:'X'},{d:rulerFrame.T2,l:'Y'},{d:rulerFrame.N,l:'Z'}];
+  const mouse={x:px,y:py}; const s0=worldToScreenLocal(S);
+  let best=null;
+  for(const ax of axes){
+    const s1=worldToScreenLocal(S.clone().addScaledVector(ax.d, spanScale));
+    const dpx=distPointToLine(mouse,s0,s1);
+    if(!best||dpx<best.dpx) best={ax,dpx};
+  }
+  const SNAP=Math.max(14, dom.clientWidth*0.012);
+  if(best && best.dpx<SNAP){
+    const t=closestParamOnLine(O,Dr,S,best.ax.d);
+    return { end:S.clone().addScaledVector(best.ax.d, t), axis:best.ax.l };
+  }
+  const fwd=camera.getWorldDirection(new THREE.Vector3());
+  const den=Dr.dot(fwd);
+  let end;
+  if(Math.abs(den)<1e-6) end=S.clone();
+  else { const t=(S.clone().sub(O)).dot(fwd)/den; end=O.clone().addScaledVector(Dr,t); }
+  return { end, axis:null };
+}
+function labelText(dist,axis){ return (axis?axis+' ':'')+dist.toFixed(2)+' mm'; }
+
+function rulerClick(px,py){
+  if(rulerPhase===0){
+    const hit=raycastModel(px,py);
+    if(!hit){ toast('Click on the model surface to start the ruler', true); return; }
+    const N=new THREE.Vector3(); triNormal(currentGeometry.getAttribute('position'), hit.faceIndex, N);
+    const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
+    rulerFrame={ S:hit.point.clone(), T1, T2, N };
+    rulerPhase=1; makePreview(); updateHud();
+  } else {
+    const {end,axis}=rulerEnd(px,py);
+    addRuler(rulerFrame.S.clone(), end, axis);
+    rulerPhase=0; rulerFrame=null; removePreview(); updateHud();
+  }
+}
+function addRuler(S,E,axis){
+  const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([S,E]),
+    new THREE.LineBasicMaterial({color:0xffd43b, depthTest:false}));
+  line.renderOrder=3;
+  const sph=()=>new THREE.Mesh(new THREE.SphereGeometry(spanScale*0.012,10,8),
+    new THREE.MeshBasicMaterial({color:0xffd43b, depthTest:false}));
+  const s1=sph(); s1.position.copy(S); const s2=sph(); s2.position.copy(E);
+  s1.renderOrder=s2.renderOrder=3;
+  const grp=new THREE.Group(); grp.add(line,s1,s2); scene.add(grp);
+  const el=document.createElement('div'); el.className='ruler-label'; document.body.appendChild(el);
+  const dist=S.distanceTo(E); el.textContent=labelText(dist,axis);
+  rulers.push({grp,line,el,S:S.clone(),E:E.clone(),dist,axis});
+  toast('Ruler placed: '+dist.toFixed(2)+' mm'+(axis?' along '+axis:' (free)'));
+}
+function makePreview(){
+  removePreview();
+  const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([rulerFrame.S, rulerFrame.S.clone()]),
+    new THREE.LineBasicMaterial({color:0xffd43b, depthTest:false})); line.renderOrder=3;
+  scene.add(line);
+  const el=document.createElement('div'); el.className='ruler-label preview'; document.body.appendChild(el);
+  preview={line,el,S:rulerFrame.S.clone(),E:rulerFrame.S.clone(),axis:null};
+}
+function updatePreview(px,py){
+  if(!preview) return;
+  const {end,axis}=rulerEnd(px,py); preview.E.copy(end); preview.axis=axis;
+  const p=preview.line.geometry.getAttribute('position');
+  p.setXYZ(0, preview.S.x,preview.S.y,preview.S.z); p.setXYZ(1, end.x,end.y,end.z); p.needsUpdate=true;
+  preview.el.textContent=labelText(preview.S.distanceTo(end),axis);
+}
+function removePreview(){ if(preview){ scene.remove(preview.line); preview.line.geometry.dispose();
+  preview.line.material.dispose(); preview.el.remove(); preview=null; } }
+
+function selectRulerAt(px,py){
+  if(!rulers.length){ deselectRuler(); return; }
+  setNDC(px,py); rc.setFromCamera(ndc,camera); rc.params.Line.threshold=spanScale*0.02;
+  const hit=rc.intersectObjects(rulers.map(r=>r.line),false)[0];
+  if(hit){ selectRuler(rulers.find(r=>r.line===hit.object)); } else deselectRuler();
+}
+function selectRuler(r){ deselectRuler(); selectedRuler=r;
+  r.grp.traverse(o=>{ if(o.material) o.material.color.set(0xff6b6b); });
+  r.el.classList.add('sel'); updateHud(); }
+function deselectRuler(){ if(!selectedRuler) return;
+  selectedRuler.grp.traverse(o=>{ if(o.material) o.material.color.set(0xffd43b); });
+  selectedRuler.el.classList.remove('sel'); selectedRuler=null; updateHud(); }
+function deleteSelectedRuler(){ const r=selectedRuler; if(!r) return; selectedRuler=null;
+  scene.remove(r.grp); r.grp.traverse(o=>{ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); });
+  r.el.remove(); const i=rulers.indexOf(r); if(i>=0) rulers.splice(i,1); updateHud(); toast('Ruler deleted'); }
+function clearAllRulers(){ for(const r of rulers.slice()){ scene.remove(r.grp);
+  r.grp.traverse(o=>{ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); }); r.el.remove(); }
+  rulers.length=0; selectedRuler=null; removePreview(); }
+
+function updateLabels(){
+  const place=(el,mid)=>{ const s=worldToScreenPage(mid);
+    if(s.z>1){ el.style.display='none'; return; }
+    el.style.display='block'; el.style.left=s.x+'px'; el.style.top=s.y+'px'; };
+  for(const r of rulers) place(r.el, r.S.clone().add(r.E).multiplyScalar(0.5));
+  if(preview) place(preview.el, preview.S.clone().add(preview.E).multiplyScalar(0.5));
+}
+
+// ---------- pointer + keyboard ----------
+let downPos=null, downTime=0;
+dom.addEventListener('pointerdown', e=>{ if(e.button!==0) return; downPos={x:e.clientX,y:e.clientY}; downTime=performance.now(); });
+dom.addEventListener('pointerup', e=>{
+  if(e.button!==0) return;
+  const wasDrag=justDragged; justDragged=false;
+  const start=downPos; downPos=null;
+  if(wasDrag || !start) return;
+  if(Math.hypot(e.clientX-start.x, e.clientY-start.y) > 6) return;   // a camera drag, not a click
+  if(performance.now()-downTime > 500) return;
+  const r=dom.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
+  if(mode==='move') selectFaceAt(px,py);
+  else if(mode==='object') selectObjectAt(px,py);
+  else if(mode==='ruler') rulerClick(px,py);
+  else selectRulerAt(px,py);
+});
+dom.addEventListener('pointermove', e=>{
+  if(mode==='ruler' && rulerPhase===1){ const r=dom.getBoundingClientRect(); updatePreview(e.clientX-r.left, e.clientY-r.top); }
+});
+window.addEventListener('keydown', e=>{
+  if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const k=e.key.toLowerCase();
+  if(k==='m') setMode('move');
+  else if(k==='o') setMode('object');
+  else if(k==='k') setMode('ruler');
+  else if(e.key==='Escape') setMode('view');
+  else if(e.key==='Delete'||e.key==='Backspace'){
+    if(selection && selection.kind==='object'){ deleteSelectedObject(); e.preventDefault(); }
+    else if(selectedRuler){ deleteSelectedRuler(); e.preventDefault(); } }
+});
+
+// called from displayGeometry after a new model loads
+function onModelLoaded(size){ clearSelection(); clearAllRulers(); setMode('view'); }
+
 function animate(){
   requestAnimationFrame(animate);
   controls.update();
   renderer.render(scene, camera);
+  updateLabels();
 }
 animate();
 

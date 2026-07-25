@@ -77,9 +77,9 @@
     <div class="card">
       <div class="thumb">🧊</div>
       <div class="body">
-        <span class="tag b">Viewer</span>
+        <span class="tag b">Viewer + editor</span>
         <h2>3D Browser</h2>
-        <p>Drag-and-drop viewer for <b>STL, 3MF, OBJ, PLY, glTF</b>. Intuitive slicer-style mouse control — left-drag orbit, <b>middle-drag pan</b>, wheel zoom. Reads size in mm.</p>
+        <p>Drag-and-drop viewer for <b>STL, 3MF, OBJ, PLY, glTF</b> with slicer-style mouse (left orbit, <b>middle-drag pan</b>, wheel zoom). Plus lightweight editing: <b>push/pull a face</b>, <b>detach a part</b> at its narrowest neck, and a surface-relative <b>ruler</b>.</p>
         <a class="go" href="viewer.html">Open 3D Browser →</a>
       </div>
     </div>
@@ -97,11 +97,14 @@
     <div class="note">Contact reduction is measured, not assumed — the tool reports the achieved ratio (π·r<sub>tip</sub>² vs. a standard flat tip) live. Two modes: <b>Generate</b> new easy-remove supports on any file, or <b>Modify existing</b> — pinch the contact band of supports already present as separate objects in a multi-body <code>.3mf</code>.</div>
   </div>
 
-  <h3 class="sec">3D Browser features</h3>
+  <h3 class="sec">3D Browser + editor features</h3>
   <ul class="feat">
     <li>Formats: <b>.stl · .3mf · .obj · .ply · .gltf/.glb</b> — auto-detected by extension</li>
     <li>Mouse: <b>left-drag</b> orbit · <b>middle-drag</b> pan · <b>right-drag</b> pan · <b>wheel</b> zoom (touch supported)</li>
     <li>Z-up print-bed orientation, auto-fit, live bounding-box dimensions in mm</li>
+    <li><b>Move a face</b> (<code>M</code>): click a flat surface → a surface-aligned 3-axis gizmo appears; drag an axis to <b>push/pull</b> and the mesh restretches to the new face position</li>
+    <li><b>Select an object</b> (<code>O</code>): click a part — a standalone or weakly-attached blob is found by connectivity and <b>chopped at its narrowest cross-section</b>, then can be dragged off or deleted</li>
+    <li><b>Ruler</b> (<code>K</code>): click a start surface then an end point; the X/Y/Z axes align to that surface and the cursor <b>snaps to the nearest axis</b> (or goes free off-axis). Rulers are selectable and deletable</li>
     <li>Wireframe, model color, background color, grid &amp; axes toggles, drag-and-drop anywhere</li>
   </ul>
 

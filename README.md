@@ -27,12 +27,19 @@ The achieved reduction is **measured live** (π·r_tip² vs. a standard flat tip
 
 **Try it instantly:** load the bundled `2x2_ver1.3mf`, or pick **▲ Test overhang (built-in)** — a slab on two legs whose underside always needs support.
 
-## 2. 3D Browser
+## 2. 3D Browser + lightweight editor
 
 - **Formats:** `.stl`, `.3mf`, `.obj`, `.ply`, `.gltf`/`.glb` — detected by extension.
 - **Mouse (slicer/CAD-intuitive):** left-drag = orbit · **middle-drag = pan** · right-drag = pan · wheel = zoom. Touch: one-finger orbit, two-finger pan/zoom.
 - Z-up print-bed orientation, auto-fit, live bounding-box **dimensions in mm**.
 - Wireframe, model/background color, grid & axes toggles, drag-and-drop anywhere.
+
+### Editor tools (left toolbox)
+
+- **Move face — `M`.** Click a flat surface to select its coplanar face; a 3-axis gizmo aligned to the surface appears. Drag an axis to **push/pull** — the vertices on that face (and every triangle welded to them) move, so the solid restretches to the new face position. Bounding-box dimensions update live.
+- **Select object — `O`.** Click a part. If it's a standalone connected component it's selected whole; if it's only *weakly* attached (a thin neck), the tool sweeps for the **smallest cross-section plane** and virtually disconnects there, so a leg/blob pops off as its own object. Drag it away to detach, or press `Del`/🗑 to remove it.
+- **Ruler — `K`.** Click a start point on a surface, then an end point. The measuring X/Y/Z axes are built from that surface's normal + tangents; while you move, the end **snaps to whichever axis is nearest the cursor**, and deviating far from all three switches to a **free** 3-D measurement. Each ruler shows its length in mm, and can be clicked to select and deleted.
+- **Esc** returns to orbit/select mode.
 
 ---
 
