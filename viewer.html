@@ -149,9 +149,19 @@
   <button id="axes" class="active">Axes</button>
   <label class="inline">Color <input type="color" id="color" value="#8ab4ff"></label>
   <label class="inline">BG <input type="color" id="bgcolor" value="#1b1d23"></label>
+  <button id="inverse" title="Inverse / negative — carve the shape out of its bounding block (Ctrl+I)">🔃 Inverse</button>
+  <select id="chop" title="Chop with an X/Y/Z plane through the centre, keeping one flush half">
+    <option value="">Chop…</option>
+    <option value="x-">✂ X − half</option>
+    <option value="x+">✂ X + half</option>
+    <option value="y-">✂ Y − half</option>
+    <option value="y+">✂ Y + half</option>
+    <option value="z-">✂ Z − half</option>
+    <option value="z+">✂ Z + half</option>
+  </select>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Added Save .3mf/.stl to the viewer">rev 10</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Inverse (Ctrl+I) + X/Y/Z chop planes">rev 11</a>
 </div>
 
 <div class="info" id="info">
@@ -1386,6 +1396,7 @@ window.addEventListener('keydown', e=>{
     else if(k==='x'){ cutObject(); e.preventDefault(); }
     else if(k==='v'){ pasteObject(); e.preventDefault(); }
     else if(k==='d'){ copyObject(); pasteObject(); e.preventDefault(); }  // duplicate
+    else if(k==='i'){ invertShape(); e.preventDefault(); }
     return;
   }
   if(k==='m') setMode('move');
@@ -1475,6 +1486,43 @@ document.getElementById('save3mf').onclick=()=>{ if(!currentGeometry){ toast('Lo
   download(build3MF(currentGeometry), currentName+'_edited.3mf'); toast('Saved '+currentName+'_edited.3mf'); };
 document.getElementById('savestl').onclick=()=>{ if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh to save)',true); return; }
   download(stlBlob(currentGeometry), currentName+'_edited.stl'); toast('Saved '+currentName+'_edited.stl'); };
+
+// ---------- inverse (negative) + axis chops (CSG) ----------
+function replaceGeo(ng){ ng.computeVertexNormals(); ng.computeBoundingBox();
+  currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
+  clearSelection(); updateDims(); updateTris(); }
+function csgResult(aGeo,bGeo,op){ const A=new Brush(aGeo),B=new Brush(bGeo);
+  A.updateMatrixWorld(); B.updateMatrixWorld(); return csgEval.evaluate(A,B,op).geometry.clone(); }
+function invertShape(){
+  if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh)',true); return; }
+  pushUndo();
+  try{
+    currentGeometry.computeBoundingBox(); const b=currentGeometry.boundingBox;
+    const s=new THREE.Vector3(); b.getSize(s); const c=new THREE.Vector3(); b.getCenter(c);
+    const pad=Math.max(s.x,s.y,s.z)*0.12;
+    const box=new THREE.BoxGeometry(s.x+2*pad,s.y+2*pad,s.z+2*pad).translate(c.x,c.y,c.z);
+    replaceGeo(csgResult(box,currentGeometry,SUBTRACTION));
+    toast('Inverse (negative) block created — '+fmt(currentGeometry.getAttribute('position').count/3)+' tris');
+  }catch(e){ console.error(e); toast('Inverse failed: '+e.message,true); undo(); }
+}
+function chopAt(axis, keepPositive){
+  if(!currentGeometry){ toast('Load a mesh first',true); return; }
+  pushUndo();
+  try{
+    currentGeometry.computeBoundingBox(); const b=currentGeometry.boundingBox;
+    const s=new THREE.Vector3(); b.getSize(s); const c=new THREE.Vector3(); b.getCenter(c);
+    const pad=Math.max(s.x,s.y,s.z)*0.1+1;
+    const dim=new THREE.Vector3(s.x+2*pad,s.y+2*pad,s.z+2*pad);
+    const dc=c.clone(); const dsize=s[axis]/2+pad; dim[axis]=dsize;
+    dc[axis]= keepPositive ? c[axis]-dsize/2 : c[axis]+dsize/2;   // discard the far half
+    const box=new THREE.BoxGeometry(dim.x,dim.y,dim.z).translate(dc.x,dc.y,dc.z);
+    replaceGeo(csgResult(currentGeometry,box,SUBTRACTION));
+    toast('Chopped at '+axis.toUpperCase()+' centre — kept the '+(keepPositive?'+':'−')+' half (flush)');
+  }catch(e){ console.error(e); toast('Chop failed: '+e.message,true); undo(); }
+}
+document.getElementById('inverse').onclick=invertShape;
+document.getElementById('chop').addEventListener('change',e=>{ const v=e.target.value; e.target.value='';
+  if(v) chopAt(v[0], v[1]==='+'); });
 
 // preload: ?model=<url> wins; else your last-opened file; else the bundled sample
 const _q=new URLSearchParams(location.search).get('model');
