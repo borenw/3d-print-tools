@@ -115,6 +115,13 @@
   }
   #hud.show{opacity:1;}
   #hud b{background:rgba(255,255,255,.22); padding:1px 6px; border-radius:4px;}
+  #dbg{position:fixed; left:74px; top:64px; z-index:14; width:380px; max-width:40vw;
+    background:rgba(10,12,16,.86); border:1px solid var(--border); border-radius:8px;
+    padding:6px 8px; font:11px/1.45 ui-monospace,Menlo,Consolas,monospace; color:#9fe6b0;
+    white-space:pre-wrap; display:none; max-height:44vh; overflow:auto;}
+  #dbg.show{display:block;}
+  #dbg .hd{color:var(--sub); display:flex; justify-content:space-between; margin-bottom:3px;}
+  #dbg .hd b{color:var(--text);} #dbg .hd span{cursor:pointer; color:var(--accent);}
   #choppanel,#shrinkpanel{position:fixed; top:96px; left:50%; transform:translateX(-50%); z-index:12;
     background:rgba(35,38,46,.96); border:1px solid var(--border); border-radius:8px;
     padding:6px 12px; font-size:13px; display:none; align-items:center; gap:8px; color:var(--text);}
@@ -163,7 +170,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Draw circle/rect by click-click (center+radius) or drag">rev 17</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="On-screen debug log + draw-tool activation & highlight fixes">rev 18</a>
 </div>
 
 <div class="info" id="info">
@@ -189,6 +196,7 @@
 </div>
 
 <div id="hud"></div>
+<div id="dbg"><div class="hd"><b>debug</b><span id="dbgclear">clear ✕</span></div><div id="dbglog"></div></div>
 <div id="choppanel">
   <span class="sub">Chop plane</span>
   <button data-ax="x">X</button><button data-ax="y">Y</button><button data-ax="z">Z</button>
@@ -293,6 +301,15 @@ function toast(msg, isErr){
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>toastEl.classList.remove('show'), isErr?5000:2600);
 }
+
+// on-screen debug log (read it back to report issues)
+const dbgBox=document.getElementById('dbg'), dbgLog=document.getElementById('dbglog');
+let dbgLines=[];
+function dbg(msg){
+  dbgLines.push(msg); if(dbgLines.length>14) dbgLines.shift();
+  dbgLog.textContent=dbgLines.join('\n'); dbgBox.classList.add('show');
+}
+document.getElementById('dbgclear').onclick=()=>{ dbgLines=[]; dbgLog.textContent=''; dbgBox.classList.remove('show'); };
 
 function fmt(n){ return (Math.round(n*100)/100).toLocaleString(); }
 
@@ -742,7 +759,7 @@ document.getElementById('t-move').onclick =()=>setMode('move');
 document.getElementById('t-obj').onclick  =()=>setMode('object');
 document.getElementById('t-draw').onclick =()=>setMode('draw');
 document.getElementById('t-ruler').onclick=()=>setMode('ruler');
-document.getElementById('t-cutadd').onclick=()=>setCutAdd(drawMode==='cut'?'add':'cut');
+document.getElementById('t-cutadd').onclick=()=>{ if(mode!=='draw') setMode('draw'); setCutAdd(drawMode==='cut'?'add':'cut'); };
 document.getElementById('t-del').onclick  =()=>{
   if(selection) deleteSelectedObject();        // selected face or object
   else if(selectedRuler) deleteSelectedRuler();
@@ -1254,11 +1271,16 @@ let drawShape='rect';               // 'rect' | 'circle'
 let drawStage=0;                    // 0 idle · 1 dragging base · 3 pending (box built)
 let drawStart=null, rectA=null, rectB=null, rectLine=null, boxPreview=null, pendingBox=null;
 
-function setCutAdd(m){ drawMode=m; document.getElementById('cutadd-lbl').textContent=m.toUpperCase();
+function setCutAdd(m){ drawMode=m;
+  const el=document.getElementById('t-cutadd'); document.getElementById('cutadd-lbl').textContent=m.toUpperCase();
+  el.classList.toggle('active', m==='add');
   if(rectLine) rectLine.material.color.set(m==='cut'?0xff5555:0x55dd77);
   if(drawStage===3) rebuildPending(); updateHud(); }
-function setDrawShape(s){ drawShape=s; document.getElementById('shape-lbl').textContent=(s==='circle'?'◯':'▭'); updateHud(); }
-document.getElementById('t-shape').onclick=()=>setDrawShape(drawShape==='rect'?'circle':'rect');
+function setDrawShape(s){ drawShape=s;
+  document.getElementById('shape-lbl').textContent=(s==='circle'?'◯':'▭');
+  document.getElementById('t-shape').classList.toggle('active', s==='circle');
+  updateHud(); }
+document.getElementById('t-shape').onclick=()=>{ if(mode!=='draw') setMode('draw'); setDrawShape(drawShape==='rect'?'circle':'rect'); };
 function rayPlane(O,D,P,N){ const den=D.dot(N); if(Math.abs(den)<1e-9) return null;
   return O.clone().addScaledVector(D, P.clone().sub(O).dot(N)/den); }
 
@@ -1364,6 +1386,7 @@ function drawDown(e){
   const r=dom.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
   if(drawStage===0){                          // first click / drag-start: set the start point
     const hit=raycastModel(px,py);
+    dbg('down#1 shape='+drawShape+' mode='+drawMode+' hit='+(hit?('yes z='+hit.point.z.toFixed(1)):'NO SURFACE'));
     if(!hit){ toast('Click a surface to start the '+(drawShape==='circle'?'circle':'rectangle'), true); return; }
     const N=new THREE.Vector3(); triNormal(currentGeometry.getAttribute('position'), hit.faceIndex, N);
     const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
@@ -1375,8 +1398,9 @@ function drawDown(e){
   } else if(drawStage===2){                    // second click: set the end and apply
     const p=rayPlane(rc.ray.origin, rc.ray.direction, drawStart.P, drawStart.N);
     if(p) rectB=snapCorner(p, px, py);
+    dbg('click#2 planeHit='+(p?'yes':'NO')+' r='+rectA.distanceTo(rectB).toFixed(1));
     finalizeDraw();
-  }
+  } else { dbg('down ignored, stage='+drawStage); }
 }
 function drawMoveEvt(e){
   if(drawStage!==1 && drawStage!==2) return;
@@ -1388,6 +1412,7 @@ function drawMoveEvt(e){
 function drawUp(e){
   if(e.button!==0 || drawStage!==1) return;
   const moved = drawDownXY ? Math.hypot(e.clientX-(dom.getBoundingClientRect().left+drawDownXY.x), e.clientY-(dom.getBoundingClientRect().top+drawDownXY.y)) : 0;
+  dbg('up#1 moved='+moved.toFixed(0)+'px -> '+(moved>6?'DRAG finalize':'CLICK, await 2nd click'));
   if(moved>6) finalizeDraw();                  // it was a drag → apply on release
   else drawStage=2;                            // it was a click → wait for the second click
 }
@@ -1395,21 +1420,26 @@ function finalizeDraw(){
   const small = drawShape==='circle'
     ? rectA.distanceTo(rectB) < spanScale*0.01
     : (Math.abs(rectB.clone().sub(rectA).dot(drawStart.T1))<spanScale*0.01 || Math.abs(rectB.clone().sub(rectA).dot(drawStart.T2))<spanScale*0.01);
+  dbg('finalize shape='+drawShape+' size='+rectA.distanceTo(rectB).toFixed(1)+' small='+small);
   if(small){ cancelDraw(); toast('Too small — try again', true); return; }
   drawStage=3; rebuildPending(); applyDraw();
 }
 function applyDraw(){
-  if(drawStage!==3 || !pendingBox || !currentMesh){ return; }
+  if(drawStage!==3 || !pendingBox || !currentMesh){ dbg('applyDraw SKIP stage='+drawStage+' box='+!!pendingBox+' mesh='+!!currentMesh); return; }
   pushUndo();
   try{
+    const boxTris=pendingBox.getAttribute('position').count/3;
     const A=new Brush(currentGeometry); A.updateMatrixWorld();
     const B=new Brush(pendingBox); B.updateMatrixWorld();
     const res=csgEval.evaluate(A,B, drawMode==='cut'?SUBTRACTION:ADDITION);
-    const ng=res.geometry.clone(); ng.computeVertexNormals(); ng.computeBoundingBox();
+    let ng=res.geometry.clone(); if(ng.index) ng=ng.toNonIndexed();
+    ng.computeVertexNormals(); ng.computeBoundingBox();
+    const outTris=ng.getAttribute('position').count/3;
     currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
     updateDims(); updateTris();
-    toast((drawMode==='cut'?'Cut':'Added')+' — mesh now '+fmt(ng.getAttribute('position').count/3)+' triangles');
-  }catch(err){ console.error(err); toast('Boolean failed: '+err.message, true); undo(); }
+    dbg('CSG '+drawMode+' ok: boxTris='+boxTris+' mesh '+outTris+' tris');
+    toast((drawMode==='cut'?'Cut':'Added')+' — mesh now '+fmt(outTris)+' triangles');
+  }catch(err){ console.error(err); dbg('CSG ERROR: '+err.message); toast('Boolean failed: '+err.message, true); undo(); }
   cancelDraw();
 }
 
