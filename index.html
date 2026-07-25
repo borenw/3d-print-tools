@@ -104,7 +104,7 @@
     <li>Z-up print-bed orientation, auto-fit, live bounding-box dimensions in mm</li>
     <li><b>Move a face</b> (<code>M</code>): click a flat surface → a surface-aligned 3-axis gizmo appears; drag an axis to <b>push/pull</b> and the mesh restretches to the new face position</li>
     <li><b>Select an object</b> (<code>O</code>): click a part — a standalone or weakly-attached blob is found by connectivity and <b>chopped at its narrowest cross-section</b>, then dragged off, copied/cut/pasted, or deleted</li>
-    <li><b>Draw</b> (<code>R</code>): drag a rectangle on a surface (aligned to that surface's axes) and it becomes a box that is <b>cut</b> from or <b>added</b> to the model — a real boolean. Right-click toggles cut/add, <code>Enter</code> applies</li>
+    <li><b>Draw</b> (<code>R</code>): pick <b>CUT</b> or <b>ADD</b> (✂️ button / right-click), then drag a rectangle on a surface — on release it's <b>cut from</b> or <b>added to</b> the model as a real boolean. Corners <b>snap to nearby vertices</b>; if you keep moving off a snap it turns snapping off for that rectangle</li>
     <li><b>Ruler</b> (<code>K</code>): click a start surface then an end point; the X/Y/Z axes align to that surface and the cursor <b>snaps to the nearest axis</b> (or goes free off-axis). Rulers are selectable and deletable</li>
     <li><b>Undo/redo</b> (<code>⌘/Ctrl+Z</code>, <code>⇧Z</code>) and <b>copy / cut / paste / duplicate</b> objects (<code>⌘/Ctrl+C/X/V/D</code>)</li>
     <li>Opens a <b>G-code toolpath</b> when a sliced <code>.3mf</code> (or <code>.gcode</code>) has no mesh; <b>remembers your last file</b> and reopens it next visit</li>
