@@ -163,7 +163,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Shrink X/Y/Z (or all) by mm">rev 14</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Export cleanup: drop to plate, remove degenerate tris">rev 15</a>
 </div>
 
 <div class="info" id="info">
@@ -1528,10 +1528,32 @@ function stlBlob(geo){
 }
 function download(blob,name){ const u=URL.createObjectURL(blob), a=document.createElement('a');
   a.href=u; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(u),2000); }
+// clean up before export: drop the model onto the plate (min z = 0) and centre it
+// in XY, and skip zero-area triangles — otherwise a floating/edited mesh slices to
+// an "empty first layer" and slicers refuse to print it.
+function cleanForExport(geo){
+  const g=geo.index?geo.toNonIndexed():geo; const p=g.getAttribute('position');
+  g.computeBoundingBox(); const b=g.boundingBox;
+  const cx=(b.min.x+b.max.x)/2, cy=(b.min.y+b.max.y)/2, mz=b.min.z;
+  const A=new THREE.Vector3(),B=new THREE.Vector3(),C=new THREE.Vector3(),ab=new THREE.Vector3(),ac=new THREE.Vector3(),cr=new THREE.Vector3();
+  const out=[]; let dropped=0;
+  for(let i=0;i<p.count;i+=3){
+    A.fromBufferAttribute(p,i);B.fromBufferAttribute(p,i+1);C.fromBufferAttribute(p,i+2);
+    ab.subVectors(B,A); ac.subVectors(C,A);
+    if(cr.crossVectors(ab,ac).lengthSq()<1e-10){ dropped++; continue; }  // degenerate
+    for(const v of [A,B,C]) out.push(v.x-cx, v.y-cy, v.z-mz);            // centre XY, sit on plate
+  }
+  const ng=new THREE.BufferGeometry(); ng.setAttribute('position', new THREE.Float32BufferAttribute(out,3));
+  return {geo:ng, dropped, lifted:mz};
+}
 document.getElementById('save3mf').onclick=()=>{ if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh to save)',true); return; }
-  download(build3MF(currentGeometry), currentName+'_edited.3mf'); toast('Saved '+currentName+'_edited.3mf'); };
+  const c=cleanForExport(currentGeometry);
+  download(build3MF(c.geo), currentName+'_edited.3mf');
+  toast('Saved '+currentName+'_edited.3mf'+(c.lifted>0.01?' · dropped '+c.lifted.toFixed(1)+'mm onto the plate':'')); };
 document.getElementById('savestl').onclick=()=>{ if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh to save)',true); return; }
-  download(stlBlob(currentGeometry), currentName+'_edited.stl'); toast('Saved '+currentName+'_edited.stl'); };
+  const c=cleanForExport(currentGeometry);
+  download(stlBlob(c.geo), currentName+'_edited.stl');
+  toast('Saved '+currentName+'_edited.stl'+(c.lifted>0.01?' · dropped '+c.lifted.toFixed(1)+'mm onto the plate':'')); };
 
 // ---------- inverse (negative) + axis chops (CSG) ----------
 function replaceGeo(ng){ ng.computeVertexNormals(); ng.computeBoundingBox();
