@@ -351,6 +351,74 @@ function loaderFor(ext){
   }
 }
 
+// ---------- robust 3MF mesh parser (handles the production extension:
+//            meshes referenced across separate 3D/Objects/*.model files) ----------
+const _CORE='http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
+const _PROD='http://schemas.microsoft.com/3dmanufacturing/production/2015/06';
+function parse3MFMeshes(buffer){
+  let files; try{ files=unzipSync(new Uint8Array(buffer)); }catch(e){ return null; }
+  const dp=new DOMParser(); const cache={};
+  function getModel(path){
+    path=(path||'').replace(/^\//,''); if(!path) return null;
+    if(cache[path]!==undefined) return cache[path];
+    const data=files[path] || files[Object.keys(files).find(k=>k.toLowerCase()===path.toLowerCase())];
+    if(!data){ return cache[path]=null; }
+    const doc=dp.parseFromString(strFromU8(data),'application/xml');
+    const objects={}; const objEls=doc.getElementsByTagNameNS(_CORE,'object');
+    for(let i=0;i<objEls.length;i++) objects[objEls[i].getAttribute('id')]=objEls[i];
+    return cache[path]={doc,objects};
+  }
+  function mat(s){ const m=new THREE.Matrix4(); if(!s) return m;
+    const v=s.trim().split(/\s+/).map(Number); if(v.length<12) return m;
+    m.set(v[0],v[3],v[6],v[9], v[1],v[4],v[7],v[10], v[2],v[5],v[8],v[11], 0,0,0,1); return m; }
+  function pathOf(el){ return el.getAttributeNS(_PROD,'path') || el.getAttribute('p:path') || null; }
+  const geos=[];
+  function emit(model, objEl, xform){
+    const meshes=objEl.getElementsByTagNameNS(_CORE,'mesh');
+    if(meshes.length){
+      const mesh=meshes[0];
+      const vs=mesh.getElementsByTagNameNS(_CORE,'vertex');
+      const ts=mesh.getElementsByTagNameNS(_CORE,'triangle');
+      if(vs.length>2 && ts.length){
+        const vx=new Float64Array(vs.length*3);
+        for(let i=0;i<vs.length;i++){ vx[i*3]=+vs[i].getAttribute('x'); vx[i*3+1]=+vs[i].getAttribute('y'); vx[i*3+2]=+vs[i].getAttribute('z'); }
+        const pos=new Float32Array(ts.length*9);
+        for(let i=0;i<ts.length;i++){ const t=ts[i];
+          const A=+t.getAttribute('v1'),B=+t.getAttribute('v2'),C=+t.getAttribute('v3'); const o=i*9;
+          pos[o]=vx[A*3];pos[o+1]=vx[A*3+1];pos[o+2]=vx[A*3+2];
+          pos[o+3]=vx[B*3];pos[o+4]=vx[B*3+1];pos[o+5]=vx[B*3+2];
+          pos[o+6]=vx[C*3];pos[o+7]=vx[C*3+1];pos[o+8]=vx[C*3+2]; }
+        const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+        g.applyMatrix4(xform); geos.push(g);
+      }
+      return;
+    }
+    const comps=objEl.getElementsByTagNameNS(_CORE,'component');
+    for(let i=0;i<comps.length;i++){ const cp=comps[i];
+      const cid=cp.getAttribute('objectid'); const cpath=pathOf(cp);
+      const cm=cpath?getModel(cpath):model;
+      if(cm && cm.objects[cid]) emit(cm, cm.objects[cid], xform.clone().multiply(mat(cp.getAttribute('transform'))));
+    }
+  }
+  const root=getModel('3D/3dmodel.model'); if(!root) return null;
+  const items=root.doc.getElementsByTagNameNS(_CORE,'item');
+  for(let i=0;i<items.length;i++){ const it=items[i];
+    const oid=it.getAttribute('objectid'); const ipath=pathOf(it);
+    const m=ipath?getModel(ipath):root;
+    if(m && m.objects[oid]) emit(m, m.objects[oid], mat(it.getAttribute('transform')));
+  }
+  if(!geos.length){                       // no resolvable build items — grab any mesh we can find
+    for(const path in files){ if(!/\.model$/i.test(path)) continue; const m=getModel(path);
+      if(m) for(const id in m.objects) emit(m, m.objects[id], new THREE.Matrix4());
+      if(geos.length) break; }
+  }
+  if(!geos.length) return null;
+  const merged=geos.length>1?BufferGeometryUtils.mergeGeometries(geos,false):geos[0];
+  if(!merged) return null;
+  merged.computeVertexNormals();
+  return merged;
+}
+
 // ---------- G-code toolpath fallback ----------
 function tryGcodeFrom3MF(buffer, filename){
   try{
@@ -442,8 +510,9 @@ function loadArrayBuffer(buffer, filename){
       const geo = spec.loader.parse(buffer);
       displayGeometry(geo.toNonIndexed ? geo.toNonIndexed() : geo, filename);
     } else if(spec.type === 'group'){
-      const group = spec.loader.parse(buffer);
-      const merged = mergeToGeometry(group);
+      // custom parser first (handles inline + production-extension external meshes)
+      let merged = parse3MFMeshes(buffer);
+      if(!merged){ try{ merged = mergeToGeometry(spec.loader.parse(buffer)); }catch(_){ merged=null; } }
       if(!merged){
         // Some slicer .3mf files (e.g. Bambu/Flash Studio sliced projects) carry
         // no mesh — only a G-code toolpath. Fall back to rendering that.
