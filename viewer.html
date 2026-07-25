@@ -81,6 +81,11 @@
   #toast.show{opacity:1;}
   #toast.err{border-color:#ff5630; color:#ff9c8a;}
 
+  .rev{font-size:11px; font-weight:700; letter-spacing:.02em; background:var(--panel-2);
+    border:1px solid var(--border); color:var(--sub); padding:4px 9px; border-radius:11px;
+    white-space:nowrap; text-decoration:none;}
+  .rev:hover{border-color:var(--accent); color:var(--text);}
+
   /* editor toolbox (left rail) */
   .toolbox{
     position:fixed; left:12px; top:64px; z-index:12;
@@ -141,6 +146,7 @@
   <button id="axes" class="active">Axes</button>
   <label class="inline">Color <input type="color" id="color" value="#8ab4ff"></label>
   <label class="inline">BG <input type="color" id="bgcolor" value="#1b1d23"></label>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Draw: apply cut/add on release + feature snapping">rev 7</a>
 </div>
 
 <div class="info" id="info">

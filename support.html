@@ -28,6 +28,10 @@
     padding:6px 11px; border-radius:7px; cursor:pointer;}
   button:hover,.filebtn:hover,select:hover{border-color:var(--accent);}
   input[type=file]{display:none;}
+  .rev{font-size:11px; font-weight:700; letter-spacing:.02em; background:var(--panel-2);
+    border:1px solid var(--border); color:var(--sub); padding:4px 9px; border-radius:11px;
+    white-space:nowrap; text-decoration:none;}
+  .rev:hover{border-color:var(--accent); color:var(--text);}
 
   .sidebar{width:320px; background:var(--panel); border-left:1px solid var(--border);
     display:flex; flex-direction:column; overflow-y:auto; z-index:11;}
@@ -96,6 +100,8 @@
       <option value="samples/2x2_ver1.3mf">2x2_ver1.3mf</option>
       <option value="builtin:overhang">▲ Test overhang (built-in)</option>
     </select>
+    <span style="flex:1"></span>
+    <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank">rev 7</a>
   </div>
   <div class="legend">
     <div><span class="sw" style="background:#8a8f99"></span>Model
