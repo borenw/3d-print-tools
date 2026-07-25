@@ -150,18 +150,10 @@
   <label class="inline">Color <input type="color" id="color" value="#8ab4ff"></label>
   <label class="inline">BG <input type="color" id="bgcolor" value="#1b1d23"></label>
   <button id="inverse" title="Inverse / negative — carve the shape out of its bounding block (Ctrl+I)">🔃 Inverse</button>
-  <select id="chop" title="Chop with an X/Y/Z plane through the centre, keeping one flush half">
-    <option value="">Chop…</option>
-    <option value="x-">✂ X − half</option>
-    <option value="x+">✂ X + half</option>
-    <option value="y-">✂ Y − half</option>
-    <option value="y+">✂ Y + half</option>
-    <option value="z-">✂ Z − half</option>
-    <option value="z+">✂ Z + half</option>
-  </select>
+  <button id="chop" title="Interactive chop — hover the half to keep, click a plane (X/Y/Z) to switch, Enter to apply">✂ Chop</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Inverse (Ctrl+I) + X/Y/Z chop planes">rev 11</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Free orbit + interactive chop (pick plane & half live)">rev 12</a>
 </div>
 
 <div class="info" id="info">
@@ -689,7 +681,8 @@ let mode='view';                                   // 'view' | 'move' | 'ruler'
 const hud=document.getElementById('hud');
 function updateHud(){
   let t='';
-  if(mode==='move') t = selection
+  if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'</b> hover the half to keep (cyan) · click a plane or press X/Y/Z to switch · Enter applies · Esc cancels';
+  else if(mode==='move') t = selection
       ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag the blue axis to '+(pushMode==='extrude'?'extrude (new walls)':'stretch attached faces')+' · ⬆ toggles · Ctrl/Shift+drag refine · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
@@ -705,6 +698,7 @@ function updateHud(){
   hud.innerHTML=t; hud.classList.toggle('show', !!t);
 }
 function setMode(m){
+  if(chopMode) exitChop();
   mode=m;
   for(const [id,mm] of [['t-view','view'],['t-move','move'],['t-obj','object'],['t-draw','draw'],['t-ruler','ruler']])
     document.getElementById(id).classList.toggle('active', m===mm);
@@ -804,8 +798,12 @@ function selectFaceAt(px,py){
 // animate the camera to look straight down the face normal (planar view)
 function flattenToFace(N, T2, centroid){
   const dist=Math.max(camera.position.distanceTo(controls.target), spanScale*0.9);
-  camera.up.copy(T2);              // tangent → never degenerate, keeps the face upright-ish
-  camAnim={ fp:camera.position.clone(), tp:centroid.clone().addScaledVector(N,dist),
+  // keep world Z as up so orbit stays free (no locked axis); for near-vertical
+  // faces, tilt a touch off the Z pole so the view isn't at the orbit singularity
+  let dir=N.clone();
+  if(Math.abs(N.z)>0.96) dir=new THREE.Vector3(0.34,0.05,Math.sign(N.z||1)*0.94).normalize();
+  camera.up.set(0,0,1);
+  camAnim={ fp:camera.position.clone(), tp:centroid.clone().addScaledVector(dir,dist),
             ft:controls.target.clone(), tt:centroid.clone(), t:0 };
 }
 
@@ -1372,12 +1370,14 @@ dom.addEventListener('pointerup', e=>{
   if(Math.hypot(e.clientX-start.x, e.clientY-start.y) > 6) return;   // a camera drag, not a click
   if(performance.now()-downTime > 500) return;
   const r=dom.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
-  if(mode==='move') selectFaceAt(px,py);
+  if(chopMode) chopClickAt(px,py);            // click a plane to switch axis
+  else if(mode==='move') selectFaceAt(px,py);
   else if(mode==='object') selectObjectAt(px,py);
   else if(mode==='ruler') rulerClick(px,py);
   else selectRulerAt(px,py);
 });
 dom.addEventListener('pointermove', e=>{
+  if(chopMode){ const r=dom.getBoundingClientRect(); chopHover(e.clientX-r.left, e.clientY-r.top); }
   if(marquee){ const r=dom.getBoundingClientRect(); moveMarquee(e.clientX-r.left, e.clientY-r.top); return; }
   if(mode==='draw'){ drawMoveEvt(e); return; }
   if(mode==='ruler' && rulerPhase===1){ const r=dom.getBoundingClientRect(); updatePreview(e.clientX-r.left, e.clientY-r.top); }
@@ -1403,8 +1403,9 @@ window.addEventListener('keydown', e=>{
   else if(k==='o') setMode('object');
   else if(k==='r') setMode('draw');
   else if(k==='k') setMode('ruler');
-  else if(e.key==='Enter'){ if(mode==='draw' && drawStage===3){ applyDraw(); e.preventDefault(); } }
-  else if(e.key==='Escape'){ if(mode==='draw' && drawStage!==0) cancelDraw(); else setMode('view'); }
+  else if(k==='x'||k==='y'||k==='z'){ if(chopMode){ chopAxis=k; updateChopKeep(); updateHud(); } }
+  else if(e.key==='Enter'){ if(chopMode){ applyChopNow(); e.preventDefault(); } else if(mode==='draw' && drawStage===3){ applyDraw(); e.preventDefault(); } }
+  else if(e.key==='Escape'){ if(chopMode) exitChop(); else if(mode==='draw' && drawStage!==0) cancelDraw(); else setMode('view'); }
   else if(e.key==='Delete'||e.key==='Backspace'){
     if(mode==='draw' && drawStage!==0){ cancelDraw(); e.preventDefault(); }
     else if(selection && selection.kind==='object'){ deleteSelectedObject(); e.preventDefault(); }
@@ -1505,8 +1506,7 @@ function invertShape(){
     toast('Inverse (negative) block created — '+fmt(currentGeometry.getAttribute('position').count/3)+' tris');
   }catch(e){ console.error(e); toast('Inverse failed: '+e.message,true); undo(); }
 }
-function chopAt(axis, keepPositive){
-  if(!currentGeometry){ toast('Load a mesh first',true); return; }
+function chopAt(axis, keepPositive){          // apply a centre chop, keeping one half
   pushUndo();
   try{
     currentGeometry.computeBoundingBox(); const b=currentGeometry.boundingBox;
@@ -1517,12 +1517,74 @@ function chopAt(axis, keepPositive){
     dc[axis]= keepPositive ? c[axis]-dsize/2 : c[axis]+dsize/2;   // discard the far half
     const box=new THREE.BoxGeometry(dim.x,dim.y,dim.z).translate(dc.x,dc.y,dc.z);
     replaceGeo(csgResult(currentGeometry,box,SUBTRACTION));
-    toast('Chopped at '+axis.toUpperCase()+' centre — kept the '+(keepPositive?'+':'−')+' half (flush)');
   }catch(e){ console.error(e); toast('Chop failed: '+e.message,true); undo(); }
 }
+
+// ---------- interactive chop: pick a plane + which half to keep, live preview ----------
+let chopMode=false, chopAxis='z', chopKeepPos=true, chopCenter=new THREE.Vector3(), chopPlanes=null, chopKeepBox=null;
+function enterChop(){
+  if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh)',true); return; }
+  setMode('view'); clearSelection(); chopMode=true;
+  document.getElementById('chop').classList.add('active');
+  material.transparent=true; material.opacity=0.5;        // semi-transparent walls while choosing
+  currentGeometry.computeBoundingBox(); currentGeometry.boundingBox.getCenter(chopCenter);
+  buildChopPlanes(); updateChopKeep(); updateHud();
+}
+function exitChop(){
+  chopMode=false; document.getElementById('chop').classList.remove('active');
+  material.opacity=1; material.transparent=false;
+  removeChopPlanes(); removeChopKeep(); updateHud();
+}
+function buildChopPlanes(){
+  removeChopPlanes();
+  const b=currentGeometry.boundingBox; const s=new THREE.Vector3(); b.getSize(s);
+  const sz=Math.max(s.x,s.y,s.z)*1.45;
+  chopPlanes=new THREE.Group();
+  for(const [ax,col,vec] of [['x',0xff5555,new THREE.Vector3(1,0,0)],['y',0x55dd77,new THREE.Vector3(0,1,0)],['z',0x6699ff,new THREE.Vector3(0,0,1)]]){
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(sz,sz),
+      new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.12,side:THREE.DoubleSide,depthWrite:false}));
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),vec); m.position.copy(chopCenter);
+    m.userData.axis=ax; m.renderOrder=2; chopPlanes.add(m);
+  }
+  scene.add(chopPlanes);
+}
+function removeChopPlanes(){ if(chopPlanes){ scene.remove(chopPlanes);
+  chopPlanes.traverse(o=>{ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); }); chopPlanes=null; } }
+function removeChopKeep(){ if(chopKeepBox){ scene.remove(chopKeepBox); chopKeepBox.geometry.dispose(); chopKeepBox.material.dispose(); chopKeepBox=null; } }
+function updateChopKeep(){
+  if(!chopPlanes) return;
+  chopPlanes.children.forEach(p=> p.material.opacity=(p.userData.axis===chopAxis)?0.26:0.08);
+  removeChopKeep();
+  const b=currentGeometry.boundingBox; const s=new THREE.Vector3(); b.getSize(s); const c=chopCenter;
+  const pad=Math.max(s.x,s.y,s.z)*0.04;
+  const dim=new THREE.Vector3(s.x+pad,s.y+pad,s.z+pad); const pos=c.clone();
+  const half=s[chopAxis]/2; dim[chopAxis]=half;
+  pos[chopAxis]= chopKeepPos ? c[chopAxis]+half/2 : c[chopAxis]-half/2;
+  chopKeepBox=new THREE.Mesh(new THREE.BoxGeometry(dim.x,dim.y,dim.z).translate(pos.x,pos.y,pos.z),
+    new THREE.MeshBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.2,depthWrite:false,side:THREE.DoubleSide}));
+  chopKeepBox.renderOrder=1; scene.add(chopKeepBox);
+}
+function chopHover(px,py){
+  if(!chopMode||!currentMesh) return;
+  setNDC(px,py); rc.setFromCamera(ndc,camera);
+  const h=rc.intersectObject(currentMesh,false)[0];
+  if(h){ const side=h.point[chopAxis]>chopCenter[chopAxis]; if(side!==chopKeepPos){ chopKeepPos=side; updateChopKeep(); } }
+}
+function chopClickAt(px,py){
+  if(!chopMode) return;
+  setNDC(px,py); rc.setFromCamera(ndc,camera);
+  const hp=rc.intersectObjects(chopPlanes.children,false)[0];
+  if(hp){ chopAxis=hp.object.userData.axis; updateChopKeep(); updateHud();
+    toast('Chop plane: '+chopAxis.toUpperCase()+' — hover the half to keep, Enter to apply'); }
+}
+function applyChopNow(){
+  if(!chopMode) return;
+  const ax=chopAxis, keep=chopKeepPos; exitChop();
+  chopAt(ax, keep);
+  toast('Chopped '+ax.toUpperCase()+' — kept the '+(keep?'+':'−')+' half (flush)');
+}
 document.getElementById('inverse').onclick=invertShape;
-document.getElementById('chop').addEventListener('change',e=>{ const v=e.target.value; e.target.value='';
-  if(v) chopAt(v[0], v[1]==='+'); });
+document.getElementById('chop').onclick=()=>{ chopMode?applyChopNow():enterChop(); };
 
 // preload: ?model=<url> wins; else your last-opened file; else the bundled sample
 const _q=new URLSearchParams(location.search).get('model');
