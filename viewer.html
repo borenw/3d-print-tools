@@ -149,7 +149,7 @@
   <button id="axes" class="active">Axes</button>
   <label class="inline">Color <input type="color" id="color" value="#8ab4ff"></label>
   <label class="inline">BG <input type="color" id="bgcolor" value="#1b1d23"></label>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Move mode: head-on view + Ctrl/Shift+drag marquee select">rev 8</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Face push/pull: EXTRUDE (new walls, default) vs STRETCH">rev 9</a>
 </div>
 
 <div class="info" id="info">
@@ -168,6 +168,7 @@
   <button id="t-draw" title="Draw a rectangle on a surface, then Enter to cut/add it (R)">📐<span class="kbd">R</span></button>
   <button id="t-ruler" title="Ruler — click a start surface, then an end point (K)">📏<span class="kbd">K</span></button>
   <div class="sep"></div>
+  <button id="t-pushmode" title="Face push/pull: EXTRUDE builds new walls and leaves the rest of the mesh untouched (default); STRETCH deforms the attached faces">⬆<span class="kbd" id="pushmode-lbl">EXT</span></button>
   <button id="t-cutadd" title="Draw mode: CUT subtracts, ADD unions (right-click while drawing to toggle)">✂️<span class="kbd" id="cutadd-lbl">CUT</span></button>
   <button id="t-del" class="del" title="Delete selected ruler / object (Del)">🗑</button>
 </div>
@@ -675,7 +676,7 @@ const hud=document.getElementById('hud');
 function updateHud(){
   let t='';
   if(mode==='move') t = selection
-      ? '<b>MOVE</b> drag an axis to push/pull · <b>Ctrl+drag</b> add / <b>Shift+drag</b> remove a rectangle (snaps to edges) · Esc'
+      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag the blue axis to '+(pushMode==='extrude'?'extrude (new walls)':'stretch attached faces')+' · ⬆ toggles · Ctrl/Shift+drag refine · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
@@ -717,7 +718,13 @@ const tc=new TransformControls(camera, dom);
 tc.setMode('translate'); tc.setSize(0.85);
 let justDragged=false;
 tc.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value;
-  if(e.value){ justDragged=true; if(selection && currentGeometry) pushUndo(); } });
+  if(e.value){ justDragged=true; if(selection && currentGeometry) pushUndo(); }
+  else if(selection && selection.kind==='face' && pushMode==='extrude'){   // bake the new walls on release
+    const disp=gizmoProxy.position.clone().sub(selection.anchor);
+    if(wallMesh && disp.length()>1e-3){ bakeWalls();
+      if(faceWork) applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2); }
+    else removeWalls();
+  } });
 tc.addEventListener('objectChange', onGizmoChange);
 tc.attach(gizmoProxy); tc.visible=false; tc.enabled=false;
 scene.add(tc);
@@ -752,10 +759,13 @@ function applyFaceSelection(tris, N, T1, T2){
   for(const t of tris){ for(let k=0;k<3;k++){ a.fromBufferAttribute(pos,t*3+k);
     keys.add(keyOf(a.x,a.y,a.z)); centroid.add(a); cc++; } }
   centroid.multiplyScalar(1/cc);
-  const movable=[];
+  const stretchIdx=[];                      // welded: moving these deforms attached faces (mode A)
   for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i);
-    if(keys.has(keyOf(a.x,a.y,a.z))) movable.push(i); }
-  selection={ tris, movableIdx:movable, origArray:Float32Array.from(pos.array), anchor:centroid.clone(), kind:'face' };
+    if(keys.has(keyOf(a.x,a.y,a.z))) stretchIdx.push(i); }
+  const faceIdx=[];                          // only this face's own verts (mode B / extrude)
+  for(const t of tris) faceIdx.push(t*3, t*3+1, t*3+2);
+  const boundary=faceBoundaryEdges(tris);    // perimeter edges → where new walls go
+  selection={ tris, stretchIdx, faceIdx, boundary, origArray:Float32Array.from(pos.array), anchor:centroid.clone(), kind:'face' };
   gizmoProxy.position.copy(centroid);
   gizmoProxy.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(T1,T2,N));
   tc.setSpace('local'); tc.visible=true; tc.enabled=true;
@@ -846,14 +856,65 @@ function endMarquee(){
   }
   marquee=null;
 }
+let pushMode='extrude';                    // 'extrude' (B, default) | 'stretch' (A)
+function setPushMode(m){ pushMode=m; document.getElementById('pushmode-lbl').textContent=(m==='extrude'?'EXT':'STR'); updateHud(); }
+document.getElementById('t-pushmode').onclick=()=>setPushMode(pushMode==='extrude'?'stretch':'extrude');
+
+// perimeter edges of a triangle set, as pairs of original-position Vector3s
+function faceBoundaryEdges(tris){
+  const pos=currentGeometry.getAttribute('position');
+  const vkey=(vi)=>{ a.fromBufferAttribute(pos,vi); return keyOf(a.x,a.y,a.z); };
+  const ek=(u,v)=> u<v ? u+'|'+v : v+'|'+u;
+  const count=new Map(), rep=new Map();
+  for(const t of tris){ const vi=[t*3,t*3+1,t*3+2]; const kk=vi.map(vkey);
+    for(let e=0;e<3;e++){ const key=ek(kk[e],kk[(e+1)%3]);
+      count.set(key,(count.get(key)||0)+1);
+      if(!rep.has(key)) rep.set(key,[new THREE.Vector3().fromBufferAttribute(pos,vi[e]),
+                                     new THREE.Vector3().fromBufferAttribute(pos,vi[(e+1)%3])]); } }
+  const edges=[]; for(const [key,c] of count) if(c===1) edges.push(rep.get(key));
+  return edges;
+}
+let wallMesh=null;
+function updateWalls(disp){
+  const edges=selection.boundary;
+  if(!edges || !edges.length){ removeWalls(); return; }
+  const need=edges.length*18;
+  if(!wallMesh || wallMesh.geometry.getAttribute('position').array.length!==need){
+    removeWalls();
+    const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(need),3));
+    wallMesh=new THREE.Mesh(g, material); currentObject.add(wallMesh);
+  }
+  const arr=wallMesh.geometry.getAttribute('position').array; let w=0;
+  const An=new THREE.Vector3(), Bn=new THREE.Vector3();
+  for(const [A,B] of edges){ An.copy(A).add(disp); Bn.copy(B).add(disp);
+    arr[w++]=A.x;arr[w++]=A.y;arr[w++]=A.z; arr[w++]=B.x;arr[w++]=B.y;arr[w++]=B.z; arr[w++]=Bn.x;arr[w++]=Bn.y;arr[w++]=Bn.z;
+    arr[w++]=A.x;arr[w++]=A.y;arr[w++]=A.z; arr[w++]=Bn.x;arr[w++]=Bn.y;arr[w++]=Bn.z; arr[w++]=An.x;arr[w++]=An.y;arr[w++]=An.z; }
+  wallMesh.geometry.getAttribute('position').needsUpdate=true; wallMesh.geometry.computeVertexNormals();
+}
+function removeWalls(){ if(wallMesh){ currentObject.remove(wallMesh); wallMesh.geometry.dispose(); wallMesh=null; } }
+function bakeWalls(){
+  if(!wallMesh) return;
+  const wp=wallMesh.geometry.getAttribute('position').array;
+  const src=currentGeometry.getAttribute('position').array;
+  const merged=new Float32Array(src.length+wp.length); merged.set(src,0); merged.set(wp,src.length);
+  const ng=new THREE.BufferGeometry(); ng.setAttribute('position', new THREE.BufferAttribute(merged,3));
+  ng.computeVertexNormals(); ng.computeBoundingBox();
+  currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
+  removeWalls(); updateDims(); updateTris();
+}
+
 function onGizmoChange(){
   if(!selection) return;
   const disp=gizmoProxy.position.clone().sub(selection.anchor);
   const pos=currentGeometry.getAttribute('position'); const arr=pos.array, orig=selection.origArray;
-  for(const idx of selection.movableIdx){ const o=idx*3;
+  // which vertices move: object = its own (rigid); face+stretch = welded; face+extrude = face-only
+  const idxs = selection.kind==='object' ? selection.movableIdx
+             : (pushMode==='stretch' ? selection.stretchIdx : selection.faceIdx);
+  for(const idx of idxs){ const o=idx*3;
     arr[o]=orig[o]+disp.x; arr[o+1]=orig[o+1]+disp.y; arr[o+2]=orig[o+2]+disp.z; }
   pos.needsUpdate=true;
   currentGeometry.computeVertexNormals();
+  if(selection.kind==='face' && pushMode==='extrude') updateWalls(disp); else removeWalls();
   updateHighlight(); updateDims();
 }
 function buildHighlight(color=0x00e5ff){
@@ -875,7 +936,7 @@ function updateHighlight(){
 }
 function removeHighlight(){ if(highlightMesh){ currentObject.remove(highlightMesh);
   highlightMesh.geometry.dispose(); highlightMesh.material.dispose(); highlightMesh=null; } }
-function clearSelection(){ removeHighlight(); selection=null; faceWork=null; tc.visible=false; tc.enabled=false; }
+function clearSelection(){ removeHighlight(); removeWalls(); selection=null; faceWork=null; tc.visible=false; tc.enabled=false; }
 
 function updateDims(){
   if(!currentGeometry) return;
