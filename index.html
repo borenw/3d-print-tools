@@ -63,7 +63,7 @@
 </head>
 <body>
 <div class="banner">
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank">rev 12</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank">rev 13</a>
   <h1>🖨️ 3D Print Tools</h1>
   <p>Two browser-based tools for FDM/resin printing — no install, nothing uploaded to a server. Everything runs locally in your browser.</p>
 </div>
@@ -109,7 +109,9 @@
     <li>Z-up print-bed orientation, auto-fit, live bounding-box dimensions in mm</li>
     <li><b>Move a face</b> (<code>M</code>): click a flat surface → the view rotates <b>head-on</b> and a surface-aligned 3-axis gizmo appears; drag an axis to push/pull. Two modes (⬆ button): <b>EXTRUDE</b> (default) builds new walls and leaves the rest of the mesh untouched, or <b>STRETCH</b> deforms the attached faces. Refine the selection with <b>Ctrl+drag</b> (add) / <b>Shift+drag</b> (remove) a rectangle — it snaps to strong edges, and stops snapping if you keep moving off one</li>
     <li><b>Select an object</b> (<code>O</code>): click a part — a standalone or weakly-attached blob is found by connectivity and <b>chopped at its narrowest cross-section</b>, then dragged off, copied/cut/pasted, or deleted</li>
-    <li><b>Draw</b> (<code>R</code>): pick <b>CUT</b> or <b>ADD</b> (✂️ button / right-click), then drag a rectangle on a surface — on release it's <b>cut from</b> or <b>added to</b> the model as a real boolean. Corners <b>snap to nearby vertices</b>; if you keep moving off a snap it turns snapping off for that rectangle</li>
+    <li><b>Draw</b> (<code>R</code>): pick shape <b>▭ rectangle / ◯ circle</b> and <b>recess (CUT)</b> or <b>protrude (ADD)</b>, then drag it on a surface — a real boolean applies on release. Corners snap to nearby vertices (with auto-backoff)</li>
+    <li><b>Inverse</b> (<code>Ctrl+I</code>) makes the negative (block minus shape); <b>Chop</b> (<code>Ctrl+O</code>) is interactive — pick the X/Y/Z plane, type its position, hover the half to keep, Enter for a flush cut</li>
+    <li><b>Delete</b> a selected face (<code>Del</code> in Move mode) or object; <b>Save</b> the edited mesh as <code>.3mf</code> / <code>.stl</code></li>
     <li><b>Ruler</b> (<code>K</code>): click a start surface then an end point; the X/Y/Z axes align to that surface and the cursor <b>snaps to the nearest axis</b> (or goes free off-axis). Rulers are selectable and deletable</li>
     <li><b>Undo/redo</b> (<code>⌘/Ctrl+Z</code>, <code>⇧Z</code>) and <b>copy / cut / paste / duplicate</b> objects (<code>⌘/Ctrl+C/X/V/D</code>)</li>
     <li>Opens a <b>G-code toolpath</b> when a sliced <code>.3mf</code> (or <code>.gcode</code>) has no mesh; <b>remembers your last file</b> and reopens it next visit</li>

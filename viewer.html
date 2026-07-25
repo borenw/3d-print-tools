@@ -115,6 +115,15 @@
   }
   #hud.show{opacity:1;}
   #hud b{background:rgba(255,255,255,.22); padding:1px 6px; border-radius:4px;}
+  #choppanel{position:fixed; top:96px; left:50%; transform:translateX(-50%); z-index:12;
+    background:rgba(35,38,46,.96); border:1px solid var(--border); border-radius:8px;
+    padding:6px 12px; font-size:13px; display:none; align-items:center; gap:8px; color:var(--text);}
+  #choppanel.show{display:flex;}
+  #choppanel button{padding:3px 9px;}
+  #choppanel button.active{background:var(--blue); border-color:var(--blue); color:#fff;}
+  #choppanel input{width:78px; background:var(--panel-2); border:1px solid var(--border); color:var(--text);
+    border-radius:5px; padding:3px 6px; font:inherit;}
+  #choppanel .sub{color:var(--sub); font-size:12px;}
 
   /* floating measurement labels */
   .ruler-label{
@@ -153,7 +162,7 @@
   <button id="chop" title="Interactive chop — hover the half to keep, click a plane (X/Y/Z) to switch, Enter to apply">✂ Chop</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Free orbit + interactive chop (pick plane & half live)">rev 12</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Circle/rect draw, delete face, numeric chop (Ctrl+O)">rev 13</a>
 </div>
 
 <div class="info" id="info">
@@ -173,11 +182,18 @@
   <button id="t-ruler" title="Ruler — click a start surface, then an end point (K)">📏<span class="kbd">K</span></button>
   <div class="sep"></div>
   <button id="t-pushmode" title="Face push/pull: EXTRUDE builds new walls and leaves the rest of the mesh untouched (default); STRETCH deforms the attached faces">⬆<span class="kbd" id="pushmode-lbl">EXT</span></button>
-  <button id="t-cutadd" title="Draw mode: CUT subtracts, ADD unions (right-click while drawing to toggle)">✂️<span class="kbd" id="cutadd-lbl">CUT</span></button>
+  <button id="t-shape" title="Draw shape: rectangle or circle">▭<span class="kbd" id="shape-lbl">▭</span></button>
+  <button id="t-cutadd" title="Draw mode: CUT = recess (subtract), ADD = protrude (union). Right-click while drawing toggles.">✂️<span class="kbd" id="cutadd-lbl">CUT</span></button>
   <button id="t-del" class="del" title="Delete selected ruler / object (Del)">🗑</button>
 </div>
 
 <div id="hud"></div>
+<div id="choppanel">
+  <span class="sub">Chop plane</span>
+  <button data-ax="x">X</button><button data-ax="y">Y</button><button data-ax="z">Z</button>
+  <span>=</span><input id="chopval" type="number" step="any"><span class="sub">mm</span>
+  <span class="sub">· hover the half to keep · Enter applies · Esc</span>
+</div>
 
 <div class="controls-legend">
   <div><span class="k">L-drag</span> orbit &nbsp; <span class="k">Mid-drag</span> pan &nbsp; <span class="k">Wheel</span> zoom</div>
@@ -681,16 +697,16 @@ let mode='view';                                   // 'view' | 'move' | 'ruler'
 const hud=document.getElementById('hud');
 function updateHud(){
   let t='';
-  if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'</b> hover the half to keep (cyan) · click a plane or press X/Y/Z to switch · Enter applies · Esc cancels';
+  if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'='+(Math.round(chopVal*100)/100)+'</b> set plane value in the panel · hover the half to keep · click a plane / X-Y-Z to switch · Enter applies';
   else if(mode==='move') t = selection
-      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag the blue axis to '+(pushMode==='extrude'?'extrude (new walls)':'stretch attached faces')+' · ⬆ toggles · Ctrl/Shift+drag refine · Esc'
+      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis to '+(pushMode==='extrude'?'extrude':'stretch')+' · ⬆ toggles · Ctrl/Shift+drag refine · <b>Del</b> deletes the face · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
       : '<b>OBJECT</b> click a part — a weakly-attached blob is chopped at its narrowest neck';
   else if(mode==='draw') t = drawStage===1
-      ? '<b>DRAW · '+drawMode.toUpperCase()+'</b> release to '+(drawMode==='cut'?'cut':'add')+' the rectangle'
-      : '<b>DRAW · '+drawMode.toUpperCase()+'</b> drag a rectangle on a surface — it '+(drawMode==='cut'?'cuts':'adds')+' on release · the ✂️ button or right-click toggles cut/add';
+      ? '<b>DRAW · '+(drawShape==='circle'?'CIRCLE':'RECT')+' · '+drawMode.toUpperCase()+'</b> release to '+(drawMode==='cut'?'recess':'protrude')
+      : '<b>DRAW · '+(drawShape==='circle'?'CIRCLE':'RECT')+' · '+drawMode.toUpperCase()+'</b> drag a '+(drawShape==='circle'?'circle':'rectangle')+' on a surface — <b>'+(drawMode==='cut'?'recess':'protrude')+'</b> on release · ▭/◯ shape · ✂️ recess/protrude';
   else if(mode==='ruler') t = (rulerPhase===1)
       ? '<b>RULER</b> click to set the end · nearest axis snaps, go off-axis for free · Esc'
       : '<b>RULER</b> click a surface to set the start point';
@@ -716,9 +732,9 @@ document.getElementById('t-draw').onclick =()=>setMode('draw');
 document.getElementById('t-ruler').onclick=()=>setMode('ruler');
 document.getElementById('t-cutadd').onclick=()=>setCutAdd(drawMode==='cut'?'add':'cut');
 document.getElementById('t-del').onclick  =()=>{
-  if(selection && selection.kind==='object') deleteSelectedObject();
+  if(selection) deleteSelectedObject();        // selected face or object
   else if(selectedRuler) deleteSelectedRuler();
-  else toast('Select a ruler or an object first, then delete'); };
+  else toast('Select a face, object, or ruler first, then delete'); };
 
 // ---------- push/pull gizmo ----------
 const gizmoProxy=new THREE.Object3D(); scene.add(gizmoProxy);
@@ -1046,8 +1062,8 @@ function setObjectSelection(tris){
   buildHighlight(0xff5bd0);
   updateHud();
 }
-function deleteSelectedObject(){
-  if(!selection||selection.kind!=='object') return;
+function deleteSelectedObject(){         // deletes the selected triangles (object OR face)
+  if(!selection) return;
   pushUndo();
   const keep=new Set(selection.tris);
   const pos=currentGeometry.getAttribute('position'); const src=pos.array; const nT=pos.count/3;
@@ -1221,13 +1237,16 @@ function pasteObject(){
 
 // ---------- draw rectangle → extrude → boolean cut / add ----------
 const csgEval=new Evaluator(); csgEval.attributes=['position','normal'];
-let drawMode='cut';                 // 'cut' | 'add'
+let drawMode='cut';                 // 'cut' (recess) | 'add' (protrude)
+let drawShape='rect';               // 'rect' | 'circle'
 let drawStage=0;                    // 0 idle · 1 dragging base · 3 pending (box built)
 let drawStart=null, rectA=null, rectB=null, rectLine=null, boxPreview=null, pendingBox=null;
 
 function setCutAdd(m){ drawMode=m; document.getElementById('cutadd-lbl').textContent=m.toUpperCase();
   if(rectLine) rectLine.material.color.set(m==='cut'?0xff5555:0x55dd77);
   if(drawStage===3) rebuildPending(); updateHud(); }
+function setDrawShape(s){ drawShape=s; document.getElementById('shape-lbl').textContent=(s==='circle'?'◯':'▭'); updateHud(); }
+document.getElementById('t-shape').onclick=()=>setDrawShape(drawShape==='rect'?'circle':'rect');
 function rayPlane(O,D,P,N){ const den=D.dot(N); if(Math.abs(den)<1e-9) return null;
   return O.clone().addScaledVector(D, P.clone().sub(O).dot(N)/den); }
 
@@ -1275,12 +1294,19 @@ function rectCorners(){
   return {corner:[mk(u0,v0),mk(u1,v0),mk(u1,v1),mk(u0,v1)], u0,u1,v0,v1};
 }
 function buildRectLine(){ removeRectLine();
-  rectLine=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(
-    [drawStart.P,drawStart.P,drawStart.P,drawStart.P]),
+  const n=drawShape==='circle'?48:4; const pts=[]; for(let i=0;i<n;i++) pts.push(drawStart.P);
+  rectLine=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),
     new THREE.LineBasicMaterial({color:drawMode==='cut'?0xff5555:0x55dd77, depthTest:false}));
   rectLine.renderOrder=4; scene.add(rectLine); }
-function updateRectLine(){ if(!rectLine) return; const c=rectCorners().corner;
-  const p=rectLine.geometry.getAttribute('position'); for(let i=0;i<4;i++) p.setXYZ(i,c[i].x,c[i].y,c[i].z); p.needsUpdate=true; }
+function updateRectLine(){ if(!rectLine) return;
+  const p=rectLine.geometry.getAttribute('position'); const R=rectCorners(); const {P,T1,T2}=drawStart;
+  if(drawShape==='circle'){
+    const cu=(R.u0+R.u1)/2, cv=(R.v0+R.v1)/2, r=Math.min(R.u1-R.u0,R.v1-R.v0)/2;
+    for(let i=0;i<p.count;i++){ const a2=i/p.count*Math.PI*2;
+      const q=P.clone().addScaledVector(T1,cu+Math.cos(a2)*r).addScaledVector(T2,cv+Math.sin(a2)*r);
+      p.setXYZ(i,q.x,q.y,q.z); }
+  } else { const c=R.corner; for(let i=0;i<4;i++) p.setXYZ(i,c[i].x,c[i].y,c[i].z); }
+  p.needsUpdate=true; }
 function removeRectLine(){ if(rectLine){ scene.remove(rectLine); rectLine.geometry.dispose(); rectLine.material.dispose(); rectLine=null; } }
 
 function buildBoxGeo(){
@@ -1294,10 +1320,18 @@ function buildBoxGeo(){
     for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i); const pj=a.clone().sub(base).dot(N); if(pj<mn)mn=pj; }
     nHi=1; nLo=mn-1;
   }
-  const geo=new THREE.BoxGeometry(w,d,nHi-nLo);
-  const basis=new THREE.Matrix4().makeBasis(T1,T2,N);
-  basis.setPosition(base.clone().addScaledVector(N,(nHi+nLo)/2));
-  geo.applyMatrix4(basis); geo.computeVertexNormals();
+  const center=base.clone().addScaledVector(N,(nHi+nLo)/2);
+  let geo;
+  if(drawShape==='circle'){
+    const r=Math.min(w,d)/2;
+    geo=new THREE.CylinderGeometry(r,r,nHi-nLo,40);        // extruded circle
+    const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), N);
+    geo.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q).setPosition(center));
+  } else {
+    geo=new THREE.BoxGeometry(w,d,nHi-nLo);
+    geo.applyMatrix4(new THREE.Matrix4().makeBasis(T1,T2,N).setPosition(center));
+  }
+  geo.computeVertexNormals();
   return geo;
 }
 function rebuildPending(){
@@ -1397,18 +1431,19 @@ window.addEventListener('keydown', e=>{
     else if(k==='v'){ pasteObject(); e.preventDefault(); }
     else if(k==='d'){ copyObject(); pasteObject(); e.preventDefault(); }  // duplicate
     else if(k==='i'){ invertShape(); e.preventDefault(); }
+    else if(k==='o'){ chopMode?applyChopNow():enterChop(); e.preventDefault(); }   // Ctrl+O chop
     return;
   }
   if(k==='m') setMode('move');
   else if(k==='o') setMode('object');
   else if(k==='r') setMode('draw');
   else if(k==='k') setMode('ruler');
-  else if(k==='x'||k==='y'||k==='z'){ if(chopMode){ chopAxis=k; updateChopKeep(); updateHud(); } }
+  else if(k==='x'||k==='y'||k==='z'){ if(chopMode) setChopAxis(k); }
   else if(e.key==='Enter'){ if(chopMode){ applyChopNow(); e.preventDefault(); } else if(mode==='draw' && drawStage===3){ applyDraw(); e.preventDefault(); } }
   else if(e.key==='Escape'){ if(chopMode) exitChop(); else if(mode==='draw' && drawStage!==0) cancelDraw(); else setMode('view'); }
   else if(e.key==='Delete'||e.key==='Backspace'){
     if(mode==='draw' && drawStage!==0){ cancelDraw(); e.preventDefault(); }
-    else if(selection && selection.kind==='object'){ deleteSelectedObject(); e.preventDefault(); }
+    else if(selection){ deleteSelectedObject(); e.preventDefault(); }   // face or object
     else if(selectedRuler){ deleteSelectedRuler(); e.preventDefault(); } }
 });
 
@@ -1506,35 +1541,47 @@ function invertShape(){
     toast('Inverse (negative) block created — '+fmt(currentGeometry.getAttribute('position').count/3)+' tris');
   }catch(e){ console.error(e); toast('Inverse failed: '+e.message,true); undo(); }
 }
-function chopAt(axis, keepPositive){          // apply a centre chop, keeping one half
+function chopAt(axis, keepPositive, val){      // chop at plane axis=val, keep one side
   pushUndo();
   try{
     currentGeometry.computeBoundingBox(); const b=currentGeometry.boundingBox;
     const s=new THREE.Vector3(); b.getSize(s); const c=new THREE.Vector3(); b.getCenter(c);
     const pad=Math.max(s.x,s.y,s.z)*0.1+1;
-    const dim=new THREE.Vector3(s.x+2*pad,s.y+2*pad,s.z+2*pad);
-    const dc=c.clone(); const dsize=s[axis]/2+pad; dim[axis]=dsize;
-    dc[axis]= keepPositive ? c[axis]-dsize/2 : c[axis]+dsize/2;   // discard the far half
+    const lo=keepPositive ? b.min[axis]-pad : val;         // discard region on the axis
+    const hi=keepPositive ? val : b.max[axis]+pad;
+    const dim=new THREE.Vector3(s.x+2*pad,s.y+2*pad,s.z+2*pad); dim[axis]=Math.max(1e-3,hi-lo);
+    const dc=c.clone(); dc[axis]=(lo+hi)/2;
     const box=new THREE.BoxGeometry(dim.x,dim.y,dim.z).translate(dc.x,dc.y,dc.z);
     replaceGeo(csgResult(currentGeometry,box,SUBTRACTION));
   }catch(e){ console.error(e); toast('Chop failed: '+e.message,true); undo(); }
 }
 
-// ---------- interactive chop: pick a plane + which half to keep, live preview ----------
-let chopMode=false, chopAxis='z', chopKeepPos=true, chopCenter=new THREE.Vector3(), chopPlanes=null, chopKeepBox=null;
+// ---------- interactive chop: pick a plane + position + which half to keep ----------
+let chopMode=false, chopAxis='z', chopKeepPos=true, chopVal=0, chopCenter=new THREE.Vector3(), chopPlanes=null, chopKeepBox=null;
+const chopPanel=document.getElementById('choppanel'), chopValInput=document.getElementById('chopval');
 function enterChop(){
   if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh)',true); return; }
   setMode('view'); clearSelection(); chopMode=true;
   document.getElementById('chop').classList.add('active');
   material.transparent=true; material.opacity=0.5;        // semi-transparent walls while choosing
   currentGeometry.computeBoundingBox(); currentGeometry.boundingBox.getCenter(chopCenter);
-  buildChopPlanes(); updateChopKeep(); updateHud();
+  setChopAxis(chopAxis);
+  buildChopPlanes(); updateChopKeep(); chopPanel.classList.add('show'); updateHud();
 }
 function exitChop(){
   chopMode=false; document.getElementById('chop').classList.remove('active');
-  material.opacity=1; material.transparent=false;
+  material.opacity=1; material.transparent=false; chopPanel.classList.remove('show');
   removeChopPlanes(); removeChopKeep(); updateHud();
 }
+function setChopAxis(ax){
+  chopAxis=ax; chopVal=chopCenter[ax];
+  chopValInput.value=(Math.round(chopVal*100)/100);
+  chopPanel.querySelectorAll('button').forEach(btn=>btn.classList.toggle('active', btn.dataset.ax===ax));
+  if(chopPlanes) updateChopKeep(); updateHud();
+}
+chopPanel.querySelectorAll('button').forEach(btn=> btn.onclick=()=>setChopAxis(btn.dataset.ax));
+chopValInput.addEventListener('input',()=>{ const v=parseFloat(chopValInput.value); if(!isNaN(v)){ chopVal=v; updateChopKeep(); } });
+chopValInput.addEventListener('keydown',e=>{ if(e.key==='Enter') applyChopNow(); else if(e.key==='Escape') exitChop(); });
 function buildChopPlanes(){
   removeChopPlanes();
   const b=currentGeometry.boundingBox; const s=new THREE.Vector3(); b.getSize(s);
@@ -1553,13 +1600,16 @@ function removeChopPlanes(){ if(chopPlanes){ scene.remove(chopPlanes);
 function removeChopKeep(){ if(chopKeepBox){ scene.remove(chopKeepBox); chopKeepBox.geometry.dispose(); chopKeepBox.material.dispose(); chopKeepBox=null; } }
 function updateChopKeep(){
   if(!chopPlanes) return;
-  chopPlanes.children.forEach(p=> p.material.opacity=(p.userData.axis===chopAxis)?0.26:0.08);
+  chopPlanes.children.forEach(p=>{ const active=p.userData.axis===chopAxis;
+    p.material.opacity=active?0.26:0.08;
+    const pp=chopCenter.clone(); if(active) pp[chopAxis]=chopVal; p.position.copy(pp); });
   removeChopKeep();
-  const b=currentGeometry.boundingBox; const s=new THREE.Vector3(); b.getSize(s); const c=chopCenter;
+  const b=currentGeometry.boundingBox; const s=new THREE.Vector3(); b.getSize(s);
   const pad=Math.max(s.x,s.y,s.z)*0.04;
-  const dim=new THREE.Vector3(s.x+pad,s.y+pad,s.z+pad); const pos=c.clone();
-  const half=s[chopAxis]/2; dim[chopAxis]=half;
-  pos[chopAxis]= chopKeepPos ? c[chopAxis]+half/2 : c[chopAxis]-half/2;
+  const lo=chopKeepPos ? chopVal : b.min[chopAxis];
+  const hi=chopKeepPos ? b.max[chopAxis] : chopVal;
+  const dim=new THREE.Vector3(s.x+pad,s.y+pad,s.z+pad); dim[chopAxis]=Math.max(0.01,hi-lo);
+  const pos=chopCenter.clone(); pos[chopAxis]=(lo+hi)/2;
   chopKeepBox=new THREE.Mesh(new THREE.BoxGeometry(dim.x,dim.y,dim.z).translate(pos.x,pos.y,pos.z),
     new THREE.MeshBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.2,depthWrite:false,side:THREE.DoubleSide}));
   chopKeepBox.renderOrder=1; scene.add(chopKeepBox);
@@ -1568,20 +1618,20 @@ function chopHover(px,py){
   if(!chopMode||!currentMesh) return;
   setNDC(px,py); rc.setFromCamera(ndc,camera);
   const h=rc.intersectObject(currentMesh,false)[0];
-  if(h){ const side=h.point[chopAxis]>chopCenter[chopAxis]; if(side!==chopKeepPos){ chopKeepPos=side; updateChopKeep(); } }
+  if(h){ const side=h.point[chopAxis]>chopVal; if(side!==chopKeepPos){ chopKeepPos=side; updateChopKeep(); } }
 }
 function chopClickAt(px,py){
   if(!chopMode) return;
   setNDC(px,py); rc.setFromCamera(ndc,camera);
   const hp=rc.intersectObjects(chopPlanes.children,false)[0];
-  if(hp){ chopAxis=hp.object.userData.axis; updateChopKeep(); updateHud();
-    toast('Chop plane: '+chopAxis.toUpperCase()+' — hover the half to keep, Enter to apply'); }
+  if(hp){ setChopAxis(hp.object.userData.axis);
+    toast('Chop plane: '+chopAxis.toUpperCase()+' — set the value, hover the half to keep, Enter to apply'); }
 }
 function applyChopNow(){
   if(!chopMode) return;
-  const ax=chopAxis, keep=chopKeepPos; exitChop();
-  chopAt(ax, keep);
-  toast('Chopped '+ax.toUpperCase()+' — kept the '+(keep?'+':'−')+' half (flush)');
+  const ax=chopAxis, keep=chopKeepPos, val=chopVal; exitChop();
+  chopAt(ax, keep, val);
+  toast('Chopped '+ax.toUpperCase()+'='+(Math.round(val*100)/100)+' — kept the '+(keep?'+':'−')+' side (flush)');
 }
 document.getElementById('inverse').onclick=invertShape;
 document.getElementById('chop').onclick=()=>{ chopMode?applyChopNow():enterChop(); };
