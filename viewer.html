@@ -171,7 +171,7 @@
   <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 26</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 27</a>
 </div>
 
 <div class="info" id="info">
@@ -1515,10 +1515,19 @@ function buildBoxGeo(){
     base=P.clone().addScaledVector(T1,cu).addScaledVector(T2,cv); }
   let nHi,nLo;
   if(drawMode==='add'){ nHi=Math.max(spanScale*0.15, Math.min(w,d)*0.6); nLo=-0.3; }
-  else {                                   // cut: from just above the surface down through the model
+  else {                                   // cut: punch only through the wall under the cursor
     const pos=currentGeometry.getAttribute('position'); let mn=1e9;
     for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i); const pj=a.clone().sub(base).dot(N); if(pj<mn)mn=pj; }
-    nHi=1; nLo=mn-1;
+    nHi=1;
+    // raycast down the circle axis; hits alternate front/back. The first solid span
+    // ([0]..[1]) is the wall we clicked — stop in the gap before the next wall so the
+    // cut doesn't punch through the wall behind it.
+    const O=base.clone().addScaledVector(N,1), dir=N.clone().negate();
+    const ray=new THREE.Raycaster(O,dir,0,Math.abs(mn)+10); const hits=ray.intersectObject(currentMesh,false);
+    if(hits.length>=2){ const backPj=1-hits[1].distance;         // exit of the clicked wall (pj = 1 - t)
+      nLo = hits.length>=3 ? (backPj + (1-hits[2].distance))/2   // midway to the next wall's front
+                           : backPj-0.6;                          // no wall behind: clear it by 0.6mm
+    } else nLo=mn-1;                                              // open/odd geometry: through everything
   }
   const center=base.clone().addScaledVector(N,(nHi+nLo)/2);
   let geo;
