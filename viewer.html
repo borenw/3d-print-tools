@@ -171,7 +171,7 @@
   <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 27</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 28</a>
 </div>
 
 <div class="info" id="info">
@@ -734,8 +734,10 @@ function updateHud(){
       : '<b>OBJECT</b> click a part — a weakly-attached blob is chopped at its narrowest neck';
   else if(mode==='draw'){
     const lbl=drawShape==='circle'?'CIRCLE':'RECT', act=drawMode==='cut'?'recess':'protrude';
-    t = (drawStage===1||drawStage===2)
-      ? '<b>DRAW · '+lbl+' · '+drawMode.toUpperCase()+'</b> '+(drawShape==='circle'?'click again for the radius':'click the opposite corner')+' (or release a drag) to '+act
+    t = drawStage===4
+      ? '<b>DRAW · '+lbl+' · PULL UP</b> move to set depth <b>'+(drawHeight||0).toFixed(1)+' mm</b> (or type a number) · click / Enter to build · Esc'
+      : (drawStage===1||drawStage===2)
+      ? '<b>DRAW · '+lbl+' · '+drawMode.toUpperCase()+'</b> '+(drawShape==='circle'?'click again for the radius':'click the opposite corner')+' (or release a drag)'+(drawMode==='add'?', then pull up for depth':' to '+act)
       : '<b>DRAW · '+lbl+' · '+drawMode.toUpperCase()+'</b> click a surface to place a '+(drawShape==='circle'?'circle':'rectangle')+' ('+act+') · ▭/◯ shape · ✂️ recess/protrude'; }
   else if(mode==='ruler') t = (rulerPhase===1)
       ? '<b>RULER</b> click to set the end · nearest axis snaps, go off-axis for free · Esc'
@@ -1432,8 +1434,9 @@ function pasteObject(){
 const csgEval=new Evaluator(); csgEval.attributes=['position','normal'];
 let drawMode='cut';                 // 'cut' (recess) | 'add' (protrude)
 let drawShape='rect';               // 'rect' | 'circle'
-let drawStage=0;                    // 0 idle · 1 dragging base · 3 pending (box built)
+let drawStage=0;                    // 0 idle · 1 dragging base · 3 pending (box built) · 4 setting height (add)
 let drawStart=null, rectA=null, rectB=null, rectLine=null, boxPreview=null, pendingBox=null;
+let drawHeight=null, drawHeightTyped='';   // interactive extrude depth for ADD (null = auto)
 
 function setCutAdd(m){ drawMode=m;
   const el=document.getElementById('t-cutadd'); document.getElementById('cutadd-lbl').textContent=m.toUpperCase();
@@ -1514,7 +1517,8 @@ function buildBoxGeo(){
   else { const R=rectCorners(); const cu=(R.u0+R.u1)/2, cv=(R.v0+R.v1)/2; w=R.u1-R.u0; d=R.v1-R.v0;
     base=P.clone().addScaledVector(T1,cu).addScaledVector(T2,cv); }
   let nHi,nLo;
-  if(drawMode==='add'){ nHi=Math.max(spanScale*0.15, Math.min(w,d)*0.6); nLo=-0.3; }
+  if(drawMode==='add'){ nHi = drawHeight!=null ? Math.max(drawHeight,0.2)
+                                               : Math.max(spanScale*0.15, Math.min(w,d)*0.6); nLo=-0.3; }
   else {                                   // cut: punch only through the wall under the cursor
     const pos=currentGeometry.getAttribute('position'); let mn=1e9;
     for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i); const pj=a.clone().sub(base).dot(N); if(pj<mn)mn=pj; }
@@ -1551,7 +1555,7 @@ function rebuildPending(){
 }
 function removeBoxPreview(){ if(boxPreview){ scene.remove(boxPreview); boxPreview.material.dispose(); boxPreview=null; }
   if(pendingBox){ pendingBox.dispose?.(); pendingBox=null; } }
-function cancelDraw(){ removeRectLine(); removeBoxPreview(); showSnapMarker(null); drawStage=0; drawStart=null; updateHud(); }
+function cancelDraw(){ removeRectLine(); removeBoxPreview(); showSnapMarker(null); drawStage=0; drawStart=null; drawHeight=null; drawHeightTyped=''; updateHud(); }
 
 let drawDownXY=null;
 function drawDown(e){
@@ -1573,11 +1577,19 @@ function drawDown(e){
     if(p) rectB=snapCorner(p, px, py);
     dbg('click#2 planeHit='+(p?'yes':'NO')+' r='+rectA.distanceTo(rectB).toFixed(1));
     finalizeDraw();
+  } else if(drawStage===4){                     // click confirms the pulled-up depth
+    drawStage=3; applyDraw();
   } else { dbg('down ignored, stage='+drawStage); }
 }
 function drawMoveEvt(e){
-  if(drawStage!==1 && drawStage!==2) return;
   const r=dom.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
+  if(drawStage===4){                            // dragging the depth along the surface normal
+    if(drawHeightTyped) return;                 // a typed value overrides the cursor
+    setNDC(px,py); rc.setFromCamera(ndc,camera);
+    const s=rayLineParam(rc.ray.origin, rc.ray.direction, footprintCenter(), drawStart.N);
+    drawHeight=Math.max(0.2, s); rebuildPending(); updateHud(); return;
+  }
+  if(drawStage!==1 && drawStage!==2) return;
   setNDC(px,py); rc.setFromCamera(ndc,camera);
   const p=rayPlane(rc.ray.origin, rc.ray.direction, drawStart.P, drawStart.N); if(!p) return;
   rectB=snapCorner(p, px, py); updateRectLine();
@@ -1589,12 +1601,31 @@ function drawUp(e){
   if(moved>6) finalizeDraw();                  // it was a drag → apply on release
   else drawStage=2;                            // it was a click → wait for the second click
 }
+// centre of the drawn footprint on the surface plane
+function footprintCenter(){
+  const {P,T1,T2}=drawStart;
+  if(drawShape==='circle') return rectA.clone();
+  const R=rectCorners(); const cu=(R.u0+R.u1)/2, cv=(R.v0+R.v1)/2;
+  return P.clone().addScaledVector(T1,cu).addScaledVector(T2,cv);
+}
+// parameter s where the point on line (o2 + s*d2) is closest to ray (o1,d1); d2 assumed unit
+function rayLineParam(o1,d1,o2,d2){
+  const r=new THREE.Vector3().subVectors(o1,o2);
+  const a=d1.dot(d1), b=d1.dot(d2), e=d2.dot(r), d=d1.dot(r), denom=a-b*b;
+  if(Math.abs(denom)<1e-9) return e; return (a*e-b*d)/denom;
+}
 function finalizeDraw(){
   const small = drawShape==='circle'
     ? rectA.distanceTo(rectB) < spanScale*0.01
     : (Math.abs(rectB.clone().sub(rectA).dot(drawStart.T1))<spanScale*0.01 || Math.abs(rectB.clone().sub(rectA).dot(drawStart.T2))<spanScale*0.01);
   dbg('finalize shape='+drawShape+' size='+rectA.distanceTo(rectB).toFixed(1)+' small='+small);
   if(small){ cancelDraw(); toast('Too small — try again', true); return; }
+  if(drawMode==='add'){                        // protrude: pull the footprint up to set its depth
+    removeRectLine(); drawStage=4;
+    drawHeight = drawHeight!=null ? drawHeight : Math.max(spanScale*0.08, Math.min(
+      Math.abs(rectB.clone().sub(rectA).dot(drawStart.T1))||1, Math.abs(rectB.clone().sub(rectA).dot(drawStart.T2))||1)*0.6);
+    drawHeightTyped=''; rebuildPending(); updateHud(); return;
+  }
   drawStage=3; rebuildPending(); applyDraw();
 }
 function applyDraw(){
@@ -1662,6 +1693,14 @@ window.addEventListener('keydown', e=>{
     else if(k==='i'){ invertShape(); e.preventDefault(); }
     else if(k==='o'){ chopMode?applyChopNow():enterChop(); e.preventDefault(); }   // Ctrl+O chop
     return;
+  }
+  if(mode==='draw' && drawStage===4){          // setting the pulled-up depth
+    if(e.key==='Enter'){ drawStage=3; applyDraw(); e.preventDefault(); return; }
+    if(e.key==='Escape'){ cancelDraw(); e.preventDefault(); return; }
+    if(/^[0-9.]$/.test(e.key)){ drawHeightTyped+=e.key; const v=parseFloat(drawHeightTyped);
+      if(!isNaN(v)){ drawHeight=Math.max(0.2,v); rebuildPending(); } updateHud(); e.preventDefault(); return; }
+    if(e.key==='Backspace'){ drawHeightTyped=drawHeightTyped.slice(0,-1); const v=parseFloat(drawHeightTyped);
+      if(!isNaN(v)) drawHeight=Math.max(0.2,v); rebuildPending(); updateHud(); e.preventDefault(); return; }
   }
   if(k==='m') setMode('move');
   else if(k==='o') setMode('object');

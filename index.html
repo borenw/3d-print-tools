@@ -63,7 +63,7 @@
 </head>
 <body>
 <div class="banner">
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank">rev 27</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank">rev 28</a>
   <h1>🖨️ 3D Print Tools</h1>
   <p>Two browser-based tools for FDM/resin printing — no install, nothing uploaded to a server. Everything runs locally in your browser.</p>
 </div>
@@ -109,7 +109,7 @@
     <li>Z-up print-bed orientation, auto-fit, live bounding-box dimensions in mm</li>
     <li><b>Move a face</b> (<code>M</code>): click a flat surface → the view rotates <b>head-on</b> and a surface-aligned 3-axis gizmo appears; drag an axis to push/pull. Two modes (⬆ button): <b>EXTRUDE</b> (default) builds new walls and leaves the rest of the mesh untouched, or <b>STRETCH</b> deforms the attached faces. Refine the selection with <b>Ctrl+drag</b> (add) / <b>Shift+drag</b> (remove) a rectangle — it snaps to strong edges, and stops snapping if you keep moving off one. Press <b>F</b> to <b>flatten + patch + simplify</b> the selected surface — snaps its vertices to a perfect plane, welds hair-line gaps shut, and <b>re-triangulates it with the fewest triangles</b> (a rectangle drawn with 10 tris becomes 2), so a slightly-wavy or cracked face becomes clean, watertight and minimal. A separate <b>✨ Simplify</b> button cleans the whole model — dropping zero-thickness thin walls, slivers and tiny stray bits</li>
     <li><b>Select an object</b> (<code>O</code>): click a part — a standalone or weakly-attached blob is found by connectivity and <b>chopped at its narrowest cross-section</b>, then dragged off, copied/cut/pasted, or deleted</li>
-    <li><b>Draw</b> (<code>R</code>): pick shape <b>▭ rectangle / ◯ circle</b> and <b>recess (CUT)</b> or <b>protrude (ADD)</b>, then drag it on a surface — a real boolean applies on release. Corners snap to nearby vertices (with auto-backoff)</li>
+    <li><b>Draw</b> (<code>R</code>): pick shape <b>▭ rectangle / ◯ circle</b> and <b>recess (CUT)</b> or <b>protrude (ADD)</b>, then drag it on a surface. In <b>ADD</b> mode you then <b>pull up to set the depth</b> — move the mouse (or type an exact mm) and click/Enter to build a new 3D box on the surface. A <b>CUT</b> now only punches through the wall under the cursor, not the wall behind it. Corners snap to nearby vertices (with auto-backoff)</li>
     <li><b>Inverse</b> (<code>Ctrl+I</code>) makes the negative (block minus shape); <b>Chop</b> (<code>Ctrl+O</code>) is interactive — pick the X/Y/Z plane, type its position, hover the half to keep, Enter for a flush cut</li>
     <li><b>Delete</b> a selected face (<code>Del</code> in Move mode) or object; <b>Save</b> the edited mesh as <code>.3mf</code> / <code>.stl</code></li>
     <li><b>Ruler</b> (<code>K</code>): click a start surface then an end point; the X/Y/Z axes align to that surface and the cursor <b>snaps to the nearest axis</b> (or goes free off-axis). Rulers are selectable and deletable</li>
