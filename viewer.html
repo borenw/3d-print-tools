@@ -172,7 +172,7 @@
   <button id="simplify" title="Fix — the QC gate: weld gaps, drop zero-thickness/sliver/degenerate faces and stray bits, fix normals, drop to plate (never fills a cavity). Runs automatically on every save too.">✨ Fix</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 103</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 104</a>
 </div>
 
 <div class="info" id="info">
@@ -192,7 +192,6 @@
   <button id="t-draw" title="Draw a rectangle on a surface, then Enter to cut/add it (R)">📐<span class="kbd">R</span></button>
   <button id="t-ruler" title="Ruler — click a start surface, then an end point (K)">📏<span class="kbd">K</span></button>
   <div class="sep"></div>
-  <button id="t-pushmode" title="Face push/pull: EXTRUDE builds new walls and leaves the rest of the mesh untouched (default); STRETCH deforms the attached faces">⬆<span class="kbd" id="pushmode-lbl">EXT</span></button>
   <button id="t-shape" title="Draw shape: rectangle or circle">▭<span class="kbd" id="shape-lbl">▭</span></button>
   <button id="t-cutadd" title="Draw mode: CUT = recess (subtract), ADD = protrude (union). Right-click while drawing toggles.">✂️<span class="kbd" id="cutadd-lbl">CUT</span></button>
   <button id="t-del" class="del" title="Delete selected ruler / object (Del)">🗑</button>
@@ -734,7 +733,7 @@ function updateHud(){
   let t='';
   if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'='+(Math.round(chopVal*100)/100)+'</b> set plane value in the panel · hover the half to keep · click a plane / X-Y-Z to switch · Enter applies';
   else if(mode==='move') t = selection
-      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · auto-cleans on release · <b>F</b> flatten + patch + fewest tris ·⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
+      ? '<b>MOVE</b> drag the blue axis to reshape the face (no new faces — the solid deforms) · auto-cleans on release · <b>F</b> flatten + patch + fewest tris · Ctrl/Shift+drag refine · Del · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
@@ -790,10 +789,7 @@ tc.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value;
   else if(selection){
     const disp=gizmoProxy.position.clone().sub(selection.anchor);
     currentGeometry.computeBoundingBox(); const s=new THREE.Vector3(); currentGeometry.boundingBox.getSize(s);
-    dbg('move end: '+(selection.kind)+'/'+pushMode+' moved='+disp.length().toFixed(1)+'mm size='+s.x.toFixed(1)+'x'+s.y.toFixed(1)+'x'+s.z.toFixed(1));
-    if(selection.kind==='face' && pushMode==='extrude'){                    // bake the new walls on release
-      if(wallMesh && disp.length()>1e-3) bakeWalls(); else removeWalls();
-    }
+    dbg('move end: '+(selection.kind)+' moved='+disp.length().toFixed(1)+'mm size='+s.x.toFixed(1)+'x'+s.y.toFixed(1)+'x'+s.z.toFixed(1));
     if(selection.kind==='face' && disp.length()>1e-3){
       const r=finalizeMove();                                              // auto-clean + thin-wall warn
       if(!r.rebuilt && faceWork) applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2);
@@ -1070,9 +1066,6 @@ function endMarquee(){
   }
   marquee=null;
 }
-let pushMode='extrude';                    // 'extrude' (B, default) | 'stretch' (A)
-function setPushMode(m){ pushMode=m; document.getElementById('pushmode-lbl').textContent=(m==='extrude'?'EXT':'STR'); updateHud(); }
-document.getElementById('t-pushmode').onclick=()=>setPushMode(pushMode==='extrude'?'stretch':'extrude');
 
 // perimeter edges of a triangle set, as pairs of original-position Vector3s
 function faceBoundaryEdges(tris){
@@ -1129,57 +1122,21 @@ function retriangulateFace(tris, N, T1, T2){
       newTris.push([p0,p1,p2]); } }
   return newTris;
 }
-let wallMesh=null;
-function updateWalls(disp){
-  const edges=selection.boundary;
-  if(!edges || !edges.length){ removeWalls(); return; }
-  const need=edges.length*18;
-  if(!wallMesh || wallMesh.geometry.getAttribute('position').array.length!==need){
-    removeWalls();
-    const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(need),3));
-    wallMesh=new THREE.Mesh(g, material); currentObject.add(wallMesh);
-  }
-  const arr=wallMesh.geometry.getAttribute('position').array; let w=0;
-  const An=new THREE.Vector3(), Bn=new THREE.Vector3();
-  for(const [A,B] of edges){ An.copy(A).add(disp); Bn.copy(B).add(disp);
-    arr[w++]=A.x;arr[w++]=A.y;arr[w++]=A.z; arr[w++]=B.x;arr[w++]=B.y;arr[w++]=B.z; arr[w++]=Bn.x;arr[w++]=Bn.y;arr[w++]=Bn.z;
-    arr[w++]=A.x;arr[w++]=A.y;arr[w++]=A.z; arr[w++]=Bn.x;arr[w++]=Bn.y;arr[w++]=Bn.z; arr[w++]=An.x;arr[w++]=An.y;arr[w++]=An.z; }
-  wallMesh.geometry.getAttribute('position').needsUpdate=true; wallMesh.geometry.computeVertexNormals();
-}
+let wallMesh=null;                              // legacy; move no longer builds walls
 function removeWalls(){ if(wallMesh){ currentObject.remove(wallMesh); wallMesh.geometry.dispose(); wallMesh=null; } }
-function bakeWalls(){
-  if(!wallMesh) return;
-  const wp=wallMesh.geometry.getAttribute('position').array;
-  const src=currentGeometry.getAttribute('position').array;
-  const merged=new Float32Array(src.length+wp.length); merged.set(src,0); merged.set(wp,src.length);
-  const ng=new THREE.BufferGeometry(); ng.setAttribute('position', new THREE.BufferAttribute(merged,3));
-  ng.computeVertexNormals(); ng.computeBoundingBox();
-  currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
-  removeWalls(); updateDims(); updateTris();
-}
 
 function onGizmoChange(){
   if(!selection) return;
   const disp=gizmoProxy.position.clone().sub(selection.anchor);
   const pos=currentGeometry.getAttribute('position'); const arr=pos.array, orig=selection.origArray;
-  // which vertices move + whether to build extrude walls
-  let idxs, walls=false;
-  if(selection.kind==='object') idxs=selection.movableIdx;                 // rigid
-  else if(pushMode==='stretch') idxs=selection.stretchIdx;                 // deform attached faces
-  else {                                                                   // extrude
-    const N=faceWork ? faceWork.N : null;
-    const inward = N && disp.dot(N) < -1e-6;
-    // pushing INWARD would fold new walls back over the existing ones (overlapping,
-    // thin, non-manifold) — so drag the shape together (stretch) instead. Only build
-    // fresh walls when pulling OUTWARD (a boss).
-    if(inward){ idxs=selection.stretchIdx; }
-    else { idxs=selection.faceIdx; walls=true; }
-  }
+  // Move is a pure deformation: shift the welded vertices of the face (or the whole
+  // object) — the attached faces stretch to follow. It NEVER adds triangles, so the
+  // topology (and manifold-ness) is preserved by construction.
+  const idxs = selection.kind==='object' ? selection.movableIdx : selection.stretchIdx;
   for(const idx of idxs){ const o=idx*3;
     arr[o]=orig[o]+disp.x; arr[o+1]=orig[o+1]+disp.y; arr[o+2]=orig[o+2]+disp.z; }
   pos.needsUpdate=true;
   currentGeometry.computeVertexNormals();
-  if(walls) updateWalls(disp); else removeWalls();
   updateHighlight(); updateDims();
 }
 function buildHighlight(color=0x00e5ff){
@@ -2038,16 +1995,42 @@ function orientFaces(P, tris){
     if(vol<0) for(const f of comp) flip(f);     // this component inside-out → flip just it
   }
 }
-// ===== Fix: the QC gate — one repair used by both the ✨ Fix button and every export =====
-// Weld coincident/near vertices, drop duplicate/zero-thickness/over-connected/degenerate
-// faces (greedyManifold), delete tiny disconnected debris, make normals point outward, and
-// sit the model on the plate. Hole-capping is OFF by default (it can fill an open cavity);
-// pass {cap:true} only when watertightness matters more than preserving recesses.
+// #5 bow-tie vertices: a vertex whose incident faces form more than one fan (they touch
+// only at the point). Duplicate the vertex, one copy per extra fan, so each fan is separate.
+function bowtieSplit(P, tris){
+  const nf=tris.length/3; const inc=new Map();
+  for(let f=0;f<nf;f++) for(let k=0;k<3;k++){ const v=tris[f*3+k]; let L=inc.get(v); if(!L){L=[];inc.set(v,L);} L.push(f); }
+  let splits=0;
+  for(const [v,faces] of inc){ if(faces.length<2) continue;
+    const parent=faces.map((_,i)=>i); const find=x=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
+    const uni=(a,b)=>{ a=find(a); b=find(b); if(a!==b) parent[a]=b; };
+    const em=new Map();                                            // edge (v,w) shared → same fan
+    for(let i=0;i<faces.length;i++){ const f=faces[i];
+      for(let k=0;k<3;k++){ const w=tris[f*3+k]; if(w===v) continue; const key=v<w?v+'_'+w:w+'_'+v;
+        const p=em.get(key); if(p===undefined) em.set(key,i); else uni(p,i); } }
+    const roots=[]; const seen=new Set();
+    for(let i=0;i<faces.length;i++){ const r=find(i); if(!seen.has(r)){ seen.add(r); roots.push(r); } }
+    if(roots.length<=1) continue;                                  // single fan → fine
+    for(let r=1;r<roots.length;r++){ const nv=P.length/3; P.push(P[v*3],P[v*3+1],P[v*3+2]);
+      for(let i=0;i<faces.length;i++) if(find(i)===roots[r]){ const f=faces[i];
+        for(let k=0;k<3;k++) if(tris[f*3+k]===v) tris[f*3+k]=nv; }
+      splits++; }
+  }
+  return splits;
+}
+// ===== Fix: the QC gate — one repair for both the ✨ Fix button and every export =====
+// Runs the 7-point mesh-defect taxonomy in a safe order so edited geometry is printable:
+//   #6 weld coincident verts → #6/#4 drop degenerate/dup/zero-thickness/over-connected faces
+//   → #5 split bow-tie vertices → #3 fill open-boundary holes → #1 drop tiny debris shells
+//   → #7 coherent outward normals, then sit on the plate.
+// cap defaults ON (printable). Pass {cap:false} to preserve intentional open boundaries.
+// Not auto-repaired in-browser: #2 self-intersections and #1 UNION of large overlapping
+// shells — those need an exact/manifold engine (Blender/Netfabb); reported, not silently fixed.
 function fixMesh(geo, opts){
-  const cap = !!(opts && opts.cap);
+  const cap = !opts || opts.cap!==false;
   const base=new THREE.BufferGeometry();
   base.setAttribute('position', (geo.index?geo.toNonIndexed():geo).getAttribute('position').clone());
-  const g=BufferGeometryUtils.mergeVertices(base, 1e-4);           // weld coincident vertices
+  const g=BufferGeometryUtils.mergeVertices(base, 1e-4);           // #6 weld coincident vertices
   const posAttr=g.getAttribute('position'); const idx=g.index;
   const P=[]; for(let i=0;i<posAttr.count;i++) P.push(posAttr.getX(i),posAttr.getY(i),posAttr.getZ(i));
   g.computeBoundingBox(); const b=g.boundingBox;
@@ -2055,38 +2038,45 @@ function fixMesh(geo, opts){
   for(let i=0;i<P.length;i+=3){ P[i]-=cx; P[i+1]-=cy; P[i+2]-=mz; } // centre XY + drop to plate
   const inTris=[]; for(let i=0;i<idx.count;i++) inTris.push(idx.getX(i));
   const before=inTris.length/3;
-  let tris=greedyManifold(P, inTris);                              // drop dup / zero-thickness / over / degenerate
+  let tris=greedyManifold(P, inTris);                              // #6/#4 drop bad faces + over-connected edges
+  const bowties=bowtieSplit(P, tris);                              // #5 split bow-tie vertices
   let capped=0;
-  if(cap){ for(let it=0; it<12; it++){ tris=greedyManifold(P, tris); const c=capHoles(P, tris); capped+=c; if(!c) break; } }
+  if(cap){ for(let it=0; it<12; it++){ tris=greedyManifold(P, tris); const c=capHoles(P, tris); capped+=c; if(!c) break; } } // #3 holes
   else tris=greedyManifold(P, tris);
-  const dd=dropDebris(P, tris); tris=dd.keep;                      // remove tiny stray bits
-  orientFaces(P, tris);                                            // consistent outward normals
+  const dd=dropDebris(P, tris); tris=dd.keep;                      // #1 remove tiny debris shells
+  orientFaces(P, tris);                                            // #7 coherent outward normals
   const ng=new THREE.BufferGeometry();
   ng.setAttribute('position', new THREE.Float32BufferAttribute(P,3)); ng.setIndex(tris);
-  return { geo:ng, lifted:mz, removed:before-tris.length/3, capped, debris:dd.debris, debrisTris:dd.debrisTris };
+  // remaining open edges after the pipeline (should be 0 when cap is on) — a printability check
+  const eu=new Map(); for(let i=0;i<tris.length;i+=3){ for(const [x,y] of [[tris[i],tris[i+1]],[tris[i+1],tris[i+2]],[tris[i+2],tris[i]]]){ const k=_ek(x,y); eu.set(k,(eu.get(k)||0)+1); } }
+  let openEdges=0; for(const c of eu.values()) if(c===1) openEdges++;
+  return { geo:ng, lifted:mz, removed:before-tris.length/3, capped, bowties, debris:dd.debris, debrisTris:dd.debrisTris, openEdges };
 }
 function fixMsg(c){ const p=[];
   if(c.removed>0) p.push('removed '+c.removed+' bad tri'+(c.removed>1?'s':''));
+  if(c.bowties) p.push('split '+c.bowties+' bow-tie vert'+(c.bowties>1?'s':''));
+  if(c.capped) p.push('filled '+c.capped+' hole'+(c.capped>1?'s':''));
   if(c.debris) p.push('removed '+c.debris+' stray bit'+(c.debris>1?'s':''));
-  if(c.capped) p.push('capped '+c.capped+' hole'+(c.capped>1?'s':''));
   if(c.lifted>0.01) p.push('dropped '+c.lifted.toFixed(1)+'mm to plate');
-  p.push('normals fixed'); return p.join(', '); }
+  p.push('normals fixed');
+  if(c.openEdges) p.push('⚠ '+c.openEdges+' open edge'+(c.openEdges>1?'s':'')+' remain');
+  return p.join(', '); }
 // ✨ Fix button — run the QC gate live on the loaded mesh
 function fixButton(){
   if(!currentGeometry){ toast('Load a model first', true); return; }
   pushUndo();
   const before=currentGeometry.getAttribute('position').count/3;
-  const c=fixMesh(currentGeometry, {cap:false});
+  const c=fixMesh(currentGeometry);                               // cap on → make it printable
   let ng=c.geo.toNonIndexed(); ng.computeVertexNormals(); ng.computeBoundingBox();
   currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
   clearSelection(); updateDims(); updateTris();
   toast('Fixed: '+fixMsg(c)+' — '+before+'→'+(ng.getAttribute('position').count/3)+' tris');
 }
 document.getElementById('save3mf').onclick=()=>{ if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh to save)',true); return; }
-  const c=fixMesh(currentGeometry, {cap:false});                  // QC gate before every export
+  const c=fixMesh(currentGeometry);                               // QC gate before every export
   download(build3MF(c.geo), currentName+'_edited.3mf'); toast('Saved '+currentName+'_edited.3mf · QC: '+fixMsg(c)); };
 document.getElementById('savestl').onclick=()=>{ if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh to save)',true); return; }
-  const c=fixMesh(currentGeometry, {cap:false});
+  const c=fixMesh(currentGeometry);
   download(stlBlob(c.geo), currentName+'_edited.stl'); toast('Saved '+currentName+'_edited.stl · QC: '+fixMsg(c)); };
 
 // ---------- inverse (negative) + axis chops (CSG) ----------
