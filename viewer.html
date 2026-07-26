@@ -170,7 +170,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Export: also drop zero-thickness (coincident) wall faces">rev 22</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten face (F) — snap a near-planar surface perfectly flat">rev 23</a>
 </div>
 
 <div class="info" id="info">
@@ -726,7 +726,7 @@ function updateHud(){
   let t='';
   if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'='+(Math.round(chopVal*100)/100)+'</b> set plane value in the panel · hover the half to keep · click a plane / X-Y-Z to switch · Enter applies';
   else if(mode==='move') t = selection
-      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis · '+(pushMode==='extrude'?'out = new walls, <b>in = reshapes the solid</b>':'reshapes attached faces')+' · ⬆ toggles · Ctrl/Shift+drag refine · Del · Esc'
+      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · <b>F</b> flatten to a perfect plane · ⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
@@ -831,6 +831,22 @@ function applyFaceSelection(tris, N, T1, T2){
 }
 function buildSelection(faceIndex){        // level-0 helper (used by tests)
   const g=gatherCoplanar(faceIndex); applyFaceSelection(g.tris, g.N, g.T1, g.T2);
+}
+// snap the selected face's (near-coplanar) vertices onto their best-fit plane so the
+// surface is perfectly flat — cleans up the small out-of-plane error the tolerant
+// selection allows. Uses the welded set so shared edges stay connected.
+function flattenSelection(){
+  if(!selection || selection.kind!=='face' || !faceWork){ toast('Select a flat face first (M mode)', true); return; }
+  pushUndo();
+  const N=faceWork.N; const pos=currentGeometry.getAttribute('position'); const arr=pos.array;
+  const idxs=selection.stretchIdx;
+  let sum=0; for(const idx of idxs){ const o=idx*3; sum+=arr[o]*N.x+arr[o+1]*N.y+arr[o+2]*N.z; }
+  const d0=sum/idxs.length; let maxErr=0;
+  for(const idx of idxs){ const o=idx*3; const dv=(arr[o]*N.x+arr[o+1]*N.y+arr[o+2]*N.z)-d0;
+    maxErr=Math.max(maxErr,Math.abs(dv)); arr[o]-=N.x*dv; arr[o+1]-=N.y*dv; arr[o+2]-=N.z*dv; }
+  pos.needsUpdate=true; currentGeometry.computeVertexNormals(); updateDims();
+  applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2);   // refresh snapshot + highlight
+  toast('Flattened face to a perfect plane (max fix '+maxErr.toFixed(3)+' mm)');
 }
 
 let faceWork=null;                 // {allTris,N,T1,T2} — the coplanar face being edited
@@ -1509,6 +1525,7 @@ window.addEventListener('keydown', e=>{
   else if(k==='o') setMode('object');
   else if(k==='r') setMode('draw');
   else if(k==='k') setMode('ruler');
+  else if(k==='f'){ if(mode==='move' && selection && selection.kind==='face') flattenSelection(); }
   else if(k==='x'||k==='y'||k==='z'){ if(chopMode) setChopAxis(k); }
   else if(e.key==='Enter'){ if(chopMode){ applyChopNow(); e.preventDefault(); } else if(mode==='draw' && drawStage===3){ applyDraw(); e.preventDefault(); } }
   else if(e.key==='Escape'){ if(chopMode) exitChop(); else if(mode==='draw' && drawStage!==0) cancelDraw(); else setMode('view'); }
