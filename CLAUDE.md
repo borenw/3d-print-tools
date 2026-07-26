@@ -8,6 +8,10 @@ Static, client-side tools hosted on GitHub Pages at https://borenw.github.io/3d-
 Every page shows a `rev N` badge in the top-right (`<a class="rev" ...>rev N</a>` in
 `index.html`, `viewer.html`, `support.html`). **On every change pushed to this repo, bump
 `rev N` by exactly 1 in all three files, in the same commit.** It's a plain monotonic counter
-(matches the commit count), so a viewer can tell which build is live. Never skip or reuse.
+so a viewer can tell which build is live. Never skip (except the one deliberate jump below) or reuse.
 
-Current: **rev 28**.
+**Milestone jump:** at the user's request the badge was bumped 29 → **100** as a milestone
+marker (the "clean move-surface" release). It no longer equals the commit count; keep
+incrementing by exactly 1 from 100 on every push.
+
+Current: **rev 100**.

@@ -171,7 +171,7 @@
   <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 28</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 100</a>
 </div>
 
 <div class="info" id="info">
@@ -727,7 +727,7 @@ function updateHud(){
   let t='';
   if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'='+(Math.round(chopVal*100)/100)+'</b> set plane value in the panel · hover the half to keep · click a plane / X-Y-Z to switch · Enter applies';
   else if(mode==='move') t = selection
-      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · <b>F</b> flatten + patch gaps + fewest tris ·⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
+      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · auto-cleans on release · <b>F</b> flatten + patch + fewest tris ·⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
@@ -780,9 +780,11 @@ tc.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value;
     currentGeometry.computeBoundingBox(); const s=new THREE.Vector3(); currentGeometry.boundingBox.getSize(s);
     dbg('move end: '+(selection.kind)+'/'+pushMode+' moved='+disp.length().toFixed(1)+'mm size='+s.x.toFixed(1)+'x'+s.y.toFixed(1)+'x'+s.z.toFixed(1));
     if(selection.kind==='face' && pushMode==='extrude'){                    // bake the new walls on release
-      if(wallMesh && disp.length()>1e-3){ bakeWalls();
-        if(faceWork) applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2); }
-      else removeWalls();
+      if(wallMesh && disp.length()>1e-3) bakeWalls(); else removeWalls();
+    }
+    if(selection.kind==='face' && disp.length()>1e-3){
+      const r=finalizeMove();                                              // auto-clean + thin-wall warn
+      if(!r.rebuilt && faceWork) applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2);
     }
   } });
 tc.addEventListener('objectChange', onGizmoChange);
@@ -941,6 +943,57 @@ function simplifyMesh(){
   if(debris)parts.push(debris+' stray bit'+(debris>1?'s':'')+' ('+debrisTris+' tris)');
   toast(parts.length? 'Simplified: removed '+parts.join(', ')+' — '+before+'→'+after+' tris'
                     : 'Already clean — nothing to simplify ('+after+' tris)');
+}
+
+const MIN_WALL=0.4;    // mm — walls thinner than this are flagged after a move
+// count moved faces that sit within MIN_WALL of an anti-parallel face behind them (a thin
+// slab). Raycasts just inside each moved face along -normal; a near opposite-facing hit = thin.
+function countThinFaces(tris){
+  if(!currentMesh) return 0;
+  const pos=currentGeometry.getAttribute('position'); const N=new THREE.Vector3(), M=new THREE.Vector3(), c=new THREE.Vector3();
+  const ray=new THREE.Raycaster(); let count=0;
+  for(const t of tris){ triNormal(pos,t,N); if(N.lengthSq()<1e-9) continue;
+    c.set(0,0,0); for(let k=0;k<3;k++){ a.fromBufferAttribute(pos,t*3+k); c.add(a); } c.multiplyScalar(1/3);
+    ray.set(c.clone().addScaledVector(N,-1e-3), N.clone().negate()); ray.far=MIN_WALL;
+    const hits=ray.intersectObject(currentMesh,false);
+    for(const h of hits){ if(h.distance<1e-3) continue; triNormal(pos,h.faceIndex,M);
+      if(M.dot(N)<-0.5){ count++; break; } break; } }
+  return count;
+}
+// drop degenerate + zero-thickness (coincident) faces created by a move. Welds within
+// 0.03mm to catch exact coincidence; never caps holes, so a real cavity stays open.
+function cleanMoveArtifacts(){
+  const { P, remap, n }=clusterWeld(currentGeometry, 0.03);
+  const V=(k)=>[P[k*3],P[k*3+1],P[k*3+2]];
+  const area2=(a,b,c)=>{ const A=V(a),B=V(b),C=V(c);
+    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2], vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
+    const cx=uy*vz-uz*vy, cy=uz*vx-ux*vz, cz=ux*vy-uy*vx; return cx*cx+cy*cy+cz*cz; };
+  const keyCount=new Map();
+  for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2]; if(a===b||b===c||a===c) continue;
+    const k=[a,b,c].slice().sort((x,y)=>x-y).join(','); keyCount.set(k,(keyCount.get(k)||0)+1); }
+  let zero=0,degen=0; const tris=[];
+  for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2];
+    if(a===b||b===c||a===c){ degen++; continue; }
+    if(area2(a,b,c)<1e-10){ degen++; continue; }
+    const k=[a,b,c].slice().sort((x,y)=>x-y).join(',');
+    if(keyCount.get(k)>1){ zero++; continue; }
+    tris.push(a,b,c); }
+  if(zero+degen===0) return { zero:0, degen:0, changed:false, geo:null };
+  const geo=geoFromTris(P,tris); geo.computeVertexNormals(); geo.computeBoundingBox();
+  return { zero, degen, changed:true, geo };
+}
+// runs when a surface move ends: auto-clean zero-thickness/degenerate faces + warn on thin
+// walls. Returns true if it rebuilt the mesh (selection was cleared).
+function finalizeMove(){
+  if(!currentGeometry || !selection || selection.kind!=='face') return {rebuilt:false,thin:0,zero:0,degen:0};
+  const thin=countThinFaces(selection.tris);
+  const res=cleanMoveArtifacts();
+  if(res.changed){ currentMesh.geometry.dispose(); currentMesh.geometry=res.geo; currentGeometry=res.geo;
+    clearSelection(); updateDims(); updateTris(); }
+  const cleaned=[]; if(res.zero) cleaned.push(res.zero+' zero-thickness'); if(res.degen) cleaned.push(res.degen+' degenerate');
+  if(cleaned.length) toast('Auto-cleaned '+cleaned.join(' + ')+' face'+(res.zero+res.degen>1?'s':'')+' after the move');
+  if(thin) toast('⚠ '+thin+' thin wall'+(thin>1?'s':'')+' (<'+MIN_WALL+'mm) — Undo (⌘Z), move less, or ✨ Simplify', true);
+  return {rebuilt:res.changed, thin, zero:res.zero, degen:res.degen};
 }
 
 let faceWork=null;                 // {allTris,N,T1,T2} — the coplanar face being edited
