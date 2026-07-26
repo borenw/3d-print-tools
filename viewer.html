@@ -172,7 +172,7 @@
   <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 101</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 102</a>
 </div>
 
 <div class="info" id="info">
@@ -188,6 +188,7 @@
   <button id="t-view" class="active" title="Select / Orbit (Esc)">✋</button>
   <button id="t-move" title="Move a flat face — click a surface, drag an axis to push/pull (M)">✥<span class="kbd">M</span></button>
   <button id="t-obj" title="Select object — click a part; a weakly-attached blob is chopped at its narrowest neck (O)">🧩<span class="kbd">O</span></button>
+  <button id="t-edge" title="Edge — click a feature edge; drag the handles at its ends (and mid-points) to reshape (E)">📎<span class="kbd">E</span></button>
   <button id="t-draw" title="Draw a rectangle on a surface, then Enter to cut/add it (R)">📐<span class="kbd">R</span></button>
   <button id="t-ruler" title="Ruler — click a start surface, then an end point (K)">📏<span class="kbd">K</span></button>
   <div class="sep"></div>
@@ -738,6 +739,9 @@ function updateHud(){
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
       : '<b>OBJECT</b> click a part — a weakly-attached blob is chopped at its narrowest neck';
+  else if(mode==='edge') t = edgeSel
+      ? '<b>EDGE</b> drag a handle (⬤ ends · ● mid-points) to reshape · snaps to vertices · click another edge · Esc'
+      : '<b>EDGE</b> click a feature edge (a crease or outline) to show its draggable handles';
   else if(mode==='draw'){
     const lbl=drawShape==='circle'?'CIRCLE':'RECT', act=drawMode==='cut'?'recess':'protrude';
     t = drawStage===4
@@ -754,11 +758,12 @@ function updateHud(){
 function setMode(m){
   if(chopMode) exitChop();
   mode=m;
-  for(const [id,mm] of [['t-view','view'],['t-move','move'],['t-obj','object'],['t-draw','draw'],['t-ruler','ruler']])
-    document.getElementById(id).classList.toggle('active', m===mm);
+  for(const [id,mm] of [['t-view','view'],['t-move','move'],['t-obj','object'],['t-edge','edge'],['t-draw','draw'],['t-ruler','ruler']])
+    document.getElementById(id)?.classList.toggle('active', m===mm);
   if(m!=='move' && m!=='object') clearSelection();
   if(m!=='ruler'){ rulerPhase=0; rulerFrame=null; removePreview(); }
   if(m!=='draw') cancelDraw();
+  if(m!=='edge') clearEdgeSel(); else buildFeatureEdges();
   // in Draw mode the left button draws the rectangle instead of orbiting
   controls.mouseButtons.LEFT = (m==='draw') ? null : THREE.MOUSE.ROTATE;
   updateHud();
@@ -766,6 +771,7 @@ function setMode(m){
 document.getElementById('t-view').onclick =()=>setMode('view');
 document.getElementById('t-move').onclick =()=>setMode('move');
 document.getElementById('t-obj').onclick  =()=>setMode('object');
+document.getElementById('t-edge').onclick =()=>setMode('edge');
 document.getElementById('t-draw').onclick =()=>setMode('draw');
 document.getElementById('t-ruler').onclick=()=>setMode('ruler');
 document.getElementById('t-cutadd').onclick=()=>{ if(mode!=='draw') setMode('draw'); setCutAdd(drawMode==='cut'?'add':'cut'); };
@@ -1627,13 +1633,12 @@ function drawDown(e){
     const N=new THREE.Vector3(); triNormal(currentGeometry.getAttribute('position'), hit.faceIndex, N);
     const T1=new THREE.Vector3(), T2=new THREE.Vector3(); makeTangents(N,T1,T2);
     drawStart={P:hit.point.clone(),N,T1,T2};
-    resetSnap();
-    const p0=snapCorner(hit.point.clone(), px, py);
+    const p0=hit.point.clone();                  // no snapping while drawing cut/add shapes
     drawStart.P=p0.clone(); rectA=p0.clone(); rectB=p0.clone();
     drawStage=1; drawDownXY={x:px,y:py}; buildRectLine(); updateHud();
   } else if(drawStage===2){                    // second click: set the end and apply
     const p=rayPlane(rc.ray.origin, rc.ray.direction, drawStart.P, drawStart.N);
-    if(p) rectB=snapCorner(p, px, py);
+    if(p) rectB=p.clone();
     dbg('click#2 planeHit='+(p?'yes':'NO')+' r='+rectA.distanceTo(rectB).toFixed(1));
     finalizeDraw();
   } else if(drawStage===4){                     // click confirms the pulled-up depth
@@ -1651,7 +1656,7 @@ function drawMoveEvt(e){
   if(drawStage!==1 && drawStage!==2) return;
   setNDC(px,py); rc.setFromCamera(ndc,camera);
   const p=rayPlane(rc.ray.origin, rc.ray.direction, drawStart.P, drawStart.N); if(!p) return;
-  rectB=snapCorner(p, px, py); updateRectLine();
+  rectB=p; updateRectLine();
 }
 function drawUp(e){
   if(e.button!==0 || drawStage!==1) return;
@@ -1674,11 +1679,13 @@ function rayLineParam(o1,d1,o2,d2){
   if(Math.abs(denom)<1e-9) return e; return (a*e-b*d)/denom;
 }
 function finalizeDraw(){
+  // no minimum-size constraint — only reject an effectively zero-size (accidental) shape
+  const eps=1e-3;
   const small = drawShape==='circle'
-    ? rectA.distanceTo(rectB) < spanScale*0.01
-    : (Math.abs(rectB.clone().sub(rectA).dot(drawStart.T1))<spanScale*0.01 || Math.abs(rectB.clone().sub(rectA).dot(drawStart.T2))<spanScale*0.01);
-  dbg('finalize shape='+drawShape+' size='+rectA.distanceTo(rectB).toFixed(1)+' small='+small);
-  if(small){ cancelDraw(); toast('Too small — try again', true); return; }
+    ? rectA.distanceTo(rectB) < eps
+    : (Math.abs(rectB.clone().sub(rectA).dot(drawStart.T1))<eps || Math.abs(rectB.clone().sub(rectA).dot(drawStart.T2))<eps);
+  dbg('finalize shape='+drawShape+' size='+rectA.distanceTo(rectB).toFixed(2)+' small='+small);
+  if(small){ cancelDraw(); return; }
   if(drawMode==='add'){                        // protrude: pull the footprint up to set its depth
     removeRectLine(); drawStage=4;
     drawHeight = drawHeight!=null ? drawHeight : Math.max(spanScale*0.08, Math.min(
@@ -1706,16 +1713,131 @@ function applyDraw(){
   cancelDraw();
 }
 
+// ================= EDGE mode: select a feature edge, drag its vertices =================
+// Handles appear at the real vertices along the edge (2 ends + interior points where the
+// edge is subdivided). Dragging a handle moves that welded vertex, with the same feature
+// snapping (adaptive disengage), then auto-cleans zero-thickness/degenerate faces.
+let featEdges=null, vertAdj=null;                 // feature-edge cache
+let edgeSel=null;                                 // { chain:[Vec3], handles:[Mesh], line:Line, group }
+let edgeDrag=null;                                // { hi, start:Vec3, idxs:[int] , plane:{P,N} }
+const FEATURE_COS=Math.cos(18*Math.PI/180);       // crease angle for "is this a real edge"
+const COLLINEAR_COS=Math.cos(20*Math.PI/180);     // how straight the polyline continuation must be
+
+function buildFeatureEdges(){
+  featEdges=[]; vertAdj=new Map(); if(!currentGeometry) return;
+  const pos=currentGeometry.getAttribute('position'); const nT=pos.count/3;
+  const N=new THREE.Vector3(); const ekey=(x,y)=> x<y ? x+'|'+y : y+'|'+x;
+  const em=new Map();
+  for(let t=0;t<nT;t++){ triNormal(pos,t,N); if(N.lengthSq()<1e-12) continue; const ns=N.clone();
+    const ks=[],ps=[]; for(let k=0;k<3;k++){ a.fromBufferAttribute(pos,t*3+k); ks.push(keyOf(a.x,a.y,a.z)); ps.push(a.clone()); }
+    for(let e=0;e<3;e++){ const ka=ks[e],kb=ks[(e+1)%3]; if(ka===kb) continue; const key=ekey(ka,kb);
+      let rec=em.get(key); if(!rec){ rec={a:ka,b:kb,pa:ps[e].clone(),pb:ps[(e+1)%3].clone(),normals:[]}; em.set(key,rec); }
+      rec.normals.push(ns); } }
+  for(const rec of em.values()){
+    let feature = rec.normals.length===1;         // open boundary
+    if(!feature){ let mn=1; for(let i=0;i<rec.normals.length;i++)for(let j=i+1;j<rec.normals.length;j++) mn=Math.min(mn, rec.normals[i].dot(rec.normals[j]));
+      feature = mn < FEATURE_COS; }               // crease
+    if(!feature) continue;
+    featEdges.push(rec);
+    if(!vertAdj.has(rec.a)) vertAdj.set(rec.a,[]); if(!vertAdj.has(rec.b)) vertAdj.set(rec.b,[]);
+    vertAdj.get(rec.a).push({to:rec.b, pos:rec.pb}); vertAdj.get(rec.b).push({to:rec.a, pos:rec.pa}); }
+}
+function segDistScreen(A,B,px,py){ const sa=worldToScreenLocal(A), sb=worldToScreenLocal(B);
+  const dx=sb.x-sa.x, dy=sb.y-sa.y, l2=dx*dx+dy*dy||1e-9;
+  let t=((px-sa.x)*dx+(py-sa.y)*dy)/l2; t=Math.max(0,Math.min(1,t));
+  return Math.hypot(px-(sa.x+t*dx), py-(sa.y+t*dy)); }
+function walkChain(seed){
+  const keys=[seed.a,seed.b], posMap=new Map([[seed.a,seed.pa.clone()],[seed.b,seed.pb.clone()]]);
+  const extend=(cur,prev,append)=>{ let guard=0;
+    while(guard++<2000){ const nbrs=vertAdj.get(cur)||[]; const cp=posMap.get(cur);
+      const inDir=new THREE.Vector3().subVectors(cp, posMap.get(prev)).normalize();
+      let nb=null,bd=COLLINEAR_COS;
+      for(const c of nbrs){ if(c.to===prev||posMap.has(c.to)) continue;
+        const d=new THREE.Vector3().subVectors(c.pos,cp).normalize().dot(inDir); if(d>bd){ bd=d; nb=c; } }
+      if(!nb) break; posMap.set(nb.to, nb.pos.clone()); append?keys.push(nb.to):keys.unshift(nb.to); prev=cur; cur=nb.to; } };
+  extend(seed.b, seed.a, true); extend(seed.a, seed.b, false);
+  return keys.map(k=>posMap.get(k));
+}
+function selectEdgeAt(px,py){
+  buildFeatureEdges();                          // always fresh (mesh may have changed)
+  let best=null, bd=Math.max(14, dom.clientWidth*0.016);
+  for(const rec of featEdges){ const d=segDistScreen(rec.pa,rec.pb,px,py); if(d<bd){ bd=d; best=rec; } }
+  if(!best){ clearEdgeSel(); toast('No edge near the cursor — click closer to an outline', true); return; }
+  edgeSel={ chain: walkChain(best) }; renderEdgeHandles(); updateHud();
+}
+function clearEdgeSel(){ if(edgeSel&&edgeSel.group){ currentObject.remove(edgeSel.group);
+    edgeSel.group.traverse(o=>{ o.geometry&&o.geometry.dispose&&o.geometry.dispose(); o.material&&o.material.dispose&&o.material.dispose(); }); }
+  edgeSel=null; showSnapMarker(null); }
+function renderEdgeHandles(){
+  if(edgeSel.group){ currentObject.remove(edgeSel.group); }
+  const g=new THREE.Group(), chain=edgeSel.chain;
+  const lg=new THREE.BufferGeometry().setFromPoints(chain);
+  const line=new THREE.Line(lg, new THREE.LineBasicMaterial({color:0x00e5ff, depthTest:false})); line.renderOrder=5; g.add(line);
+  const r=spanScale*0.013; edgeSel.handles=[];
+  chain.forEach((p,i)=>{ const end=i===0||i===chain.length-1;
+    const m=new THREE.Mesh(new THREE.SphereGeometry(r,12,10), new THREE.MeshBasicMaterial({color:end?0xffcc00:0x00e5ff, depthTest:false}));
+    m.position.copy(p); m.renderOrder=6; g.add(m); edgeSel.handles.push(m); });
+  edgeSel.line=line; edgeSel.group=g; currentObject.add(g);
+}
+function pickHandle(px,py){ if(!edgeSel) return -1; let bi=-1, bd=Math.max(16, dom.clientWidth*0.018);
+  edgeSel.handles.forEach((m,i)=>{ const s=worldToScreenLocal(m.position); const d=Math.hypot(s.x-px,s.y-py); if(d<bd){ bd=d; bi=i; } }); return bi; }
+function edgeDown(px,py){
+  const hi=pickHandle(px,py); if(hi<0) return false;
+  pushUndo(); const hp=edgeSel.chain[hi].clone();
+  const pos=currentGeometry.getAttribute('position'); const idxs=[];
+  for(let i=0;i<pos.count;i++){ a.fromBufferAttribute(pos,i); if(a.distanceToSquared(hp)<1e-8) idxs.push(i); }
+  const N=camera.getWorldDirection(new THREE.Vector3());
+  edgeDrag={ hi, start:hp, idxs, plane:{P:hp.clone(), N:N.clone()} };
+  buildSnapPts(); snapEnabled=true; snapWasOn=false; snapEscapes=0;
+  return true;
+}
+function snapVertex3D(raw, px, py, exclude){
+  if(!snapEnabled || !snapPts){ showSnapMarker(null); return raw; }
+  let best=null, bd=snapPx();
+  for(const c of snapPts){ if(exclude && c.distanceToSquared(exclude)<1e-8) continue;
+    const s=worldToScreenLocal(c); const d=Math.hypot(s.x-px,s.y-py); if(d<bd){ bd=d; best=c; } }
+  if(best){ snapWasOn=true; showSnapMarker(best); return best.clone(); }
+  if(snapWasOn){ snapWasOn=false; if(++snapEscapes>=3){ snapEnabled=false; toast('Snapping off for this drag (you kept moving off it)'); } }
+  showSnapMarker(null); return raw;
+}
+function edgeMove(px,py){
+  if(!edgeDrag) return;
+  setNDC(px,py); rc.setFromCamera(ndc,camera);
+  let p=rayPlane(rc.ray.origin, rc.ray.direction, edgeDrag.plane.P, edgeDrag.plane.N); if(!p) return;
+  p=snapVertex3D(p, px, py, edgeDrag.start);
+  const arr=currentGeometry.getAttribute('position').array;
+  for(const idx of edgeDrag.idxs){ arr[idx*3]=p.x; arr[idx*3+1]=p.y; arr[idx*3+2]=p.z; }
+  currentGeometry.getAttribute('position').needsUpdate=true; currentGeometry.computeVertexNormals();
+  edgeSel.chain[edgeDrag.hi].copy(p); edgeSel.handles[edgeDrag.hi].position.copy(p);
+  const lp=edgeSel.line.geometry.getAttribute('position'); lp.setXYZ(edgeDrag.hi, p.x,p.y,p.z); lp.needsUpdate=true;
+  updateDims();
+}
+function edgeUp(){
+  if(!edgeDrag) return; showSnapMarker(null);
+  const res=cleanMoveArtifacts();
+  if(res.changed){ currentMesh.geometry.dispose(); currentMesh.geometry=res.geo; currentGeometry=res.geo; updateDims(); updateTris();
+    const c=[]; if(res.zero)c.push(res.zero+' zero-thickness'); if(res.degen)c.push(res.degen+' degenerate');
+    if(c.length) toast('Auto-cleaned '+c.join(' + ')+' face'+(res.zero+res.degen>1?'s':'')+' after the edge move'); }
+  edgeDrag=null; buildFeatureEdges(); if(edgeSel) renderEdgeHandles(); updateTris();
+}
+
 // ---------- pointer + keyboard ----------
 let downPos=null, downTime=0;
+// capture phase: if the edge drag grabs a handle, stop OrbitControls before it starts
+dom.addEventListener('pointerdown', e=>{
+  if(mode==='edge' && e.button===0){ const r=dom.getBoundingClientRect();
+    if(pickHandle(e.clientX-r.left, e.clientY-r.top)>=0) controls.enabled=false; } }, true);
 dom.addEventListener('pointerdown', e=>{
   if(mode==='draw'){ drawDown(e); return; }
+  if(mode==='edge' && e.button===0){ const r=dom.getBoundingClientRect();
+    if(edgeDown(e.clientX-r.left, e.clientY-r.top)) return; }
   if(mode==='move' && selection && e.button===0 && (e.shiftKey||e.ctrlKey||e.metaKey)){
     const r=dom.getBoundingClientRect(); if(startMarquee(e.clientX-r.left, e.clientY-r.top, e.ctrlKey||e.metaKey)) return; }
   if(e.button!==0) return; downPos={x:e.clientX,y:e.clientY}; downTime=performance.now(); });
 dom.addEventListener('pointerup', e=>{
   if(marquee){ endMarquee(); return; }
   if(mode==='draw'){ drawUp(e); return; }
+  if(mode==='edge' && edgeDrag){ edgeUp(); controls.enabled=true; downPos=null; return; }
   if(e.button!==0) return;
   const wasDrag=justDragged; justDragged=false;
   const start=downPos; downPos=null;
@@ -1726,10 +1848,12 @@ dom.addEventListener('pointerup', e=>{
   if(chopMode) chopClickAt(px,py);            // click a plane to switch axis
   else if(mode==='move') selectFaceAt(px,py);
   else if(mode==='object') selectObjectAt(px,py);
+  else if(mode==='edge') selectEdgeAt(px,py);
   else if(mode==='ruler') rulerClick(px,py);
   else selectRulerAt(px,py);
 });
 dom.addEventListener('pointermove', e=>{
+  if(mode==='edge' && edgeDrag){ const r=dom.getBoundingClientRect(); edgeMove(e.clientX-r.left, e.clientY-r.top); return; }
   if(chopMode){ const r=dom.getBoundingClientRect(); chopHover(e.clientX-r.left, e.clientY-r.top); }
   if(marquee){ const r=dom.getBoundingClientRect(); moveMarquee(e.clientX-r.left, e.clientY-r.top); return; }
   if(mode==='draw'){ drawMoveEvt(e); return; }
@@ -1763,13 +1887,15 @@ window.addEventListener('keydown', e=>{
   }
   if(k==='m') setMode('move');
   else if(k==='o') setMode('object');
+  else if(k==='e') setMode('edge');
   else if(k==='r') setMode('draw');
   else if(k==='k') setMode('ruler');
   else if(k==='f'){ if(mode==='move' && selection && selection.kind==='face') flattenSelection(); }
   else if(k==='t'){ toggleGhost(); }
   else if(k==='x'||k==='y'||k==='z'){ if(chopMode) setChopAxis(k); }
   else if(e.key==='Enter'){ if(chopMode){ applyChopNow(); e.preventDefault(); } else if(mode==='draw' && drawStage===3){ applyDraw(); e.preventDefault(); } }
-  else if(e.key==='Escape'){ if(chopMode) exitChop(); else if(mode==='draw' && drawStage!==0) cancelDraw(); else setMode('view'); }
+  else if(e.key==='Escape'){ if(chopMode) exitChop(); else if(mode==='draw' && drawStage!==0) cancelDraw();
+    else if(mode==='edge' && edgeSel){ clearEdgeSel(); updateHud(); } else setMode('view'); }
   else if(e.key==='Delete'||e.key==='Backspace'){
     if(mode==='draw' && drawStage!==0){ cancelDraw(); e.preventDefault(); }
     else if(selection){ deleteSelectedObject(); e.preventDefault(); }   // face or object
