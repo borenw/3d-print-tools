@@ -170,7 +170,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Robust export repair: weld, drop over-faces, cap holes, orient">rev 20</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Move extrude inward now reshapes (no overlapping thin walls)">rev 21</a>
 </div>
 
 <div class="info" id="info">
@@ -726,7 +726,7 @@ function updateHud(){
   let t='';
   if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'='+(Math.round(chopVal*100)/100)+'</b> set plane value in the panel · hover the half to keep · click a plane / X-Y-Z to switch · Enter applies';
   else if(mode==='move') t = selection
-      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis to '+(pushMode==='extrude'?'extrude':'stretch')+' · ⬆ toggles · Ctrl/Shift+drag refine · <b>Del</b> deletes the face · Esc'
+      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis · '+(pushMode==='extrude'?'out = new walls, <b>in = reshapes the solid</b>':'reshapes attached faces')+' · ⬆ toggles · Ctrl/Shift+drag refine · Del · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
@@ -969,14 +969,24 @@ function onGizmoChange(){
   if(!selection) return;
   const disp=gizmoProxy.position.clone().sub(selection.anchor);
   const pos=currentGeometry.getAttribute('position'); const arr=pos.array, orig=selection.origArray;
-  // which vertices move: object = its own (rigid); face+stretch = welded; face+extrude = face-only
-  const idxs = selection.kind==='object' ? selection.movableIdx
-             : (pushMode==='stretch' ? selection.stretchIdx : selection.faceIdx);
+  // which vertices move + whether to build extrude walls
+  let idxs, walls=false;
+  if(selection.kind==='object') idxs=selection.movableIdx;                 // rigid
+  else if(pushMode==='stretch') idxs=selection.stretchIdx;                 // deform attached faces
+  else {                                                                   // extrude
+    const N=faceWork ? faceWork.N : null;
+    const inward = N && disp.dot(N) < -1e-6;
+    // pushing INWARD would fold new walls back over the existing ones (overlapping,
+    // thin, non-manifold) — so drag the shape together (stretch) instead. Only build
+    // fresh walls when pulling OUTWARD (a boss).
+    if(inward){ idxs=selection.stretchIdx; }
+    else { idxs=selection.faceIdx; walls=true; }
+  }
   for(const idx of idxs){ const o=idx*3;
     arr[o]=orig[o]+disp.x; arr[o+1]=orig[o+1]+disp.y; arr[o+2]=orig[o+2]+disp.z; }
   pos.needsUpdate=true;
   currentGeometry.computeVertexNormals();
-  if(selection.kind==='face' && pushMode==='extrude') updateWalls(disp); else removeWalls();
+  if(walls) updateWalls(disp); else removeWalls();
   updateHighlight(); updateDims();
 }
 function buildHighlight(color=0x00e5ff){
