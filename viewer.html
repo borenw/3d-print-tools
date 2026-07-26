@@ -161,6 +161,7 @@
   <button id="fit">Fit</button>
   <button id="reset">Reset view</button>
   <button id="wire">Wireframe</button>
+  <button id="ghost" title="Semi-transparent model — see through to inner walls (T)">◑ Ghost</button>
   <button id="grid" class="active">Grid</button>
   <button id="axes" class="active">Axes</button>
   <label class="inline">Color <input type="color" id="color" value="#8ab4ff"></label>
@@ -171,7 +172,7 @@
   <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 100</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 101</a>
 </div>
 
 <div class="info" id="info">
@@ -672,6 +673,11 @@ document.getElementById('reset').onclick = ()=>{
 };
 const wireBtn = document.getElementById('wire');
 wireBtn.onclick = ()=>{ material.wireframe = !material.wireframe; wireBtn.classList.toggle('active', material.wireframe); };
+const ghostBtn = document.getElementById('ghost');
+function toggleGhost(on){ const g = on===undefined ? material.opacity>=1 : on;
+  material.transparent=g; material.opacity=g?0.35:1.0; material.depthWrite=!g; material.needsUpdate=true;
+  ghostBtn.classList.toggle('active', g); }
+ghostBtn.onclick = ()=>toggleGhost();
 const gridBtn = document.getElementById('grid');
 gridBtn.onclick = ()=>{ grid.visible = !grid.visible; gridBtn.classList.toggle('active', grid.visible); };
 const axesBtn = document.getElementById('axes');
@@ -1760,6 +1766,7 @@ window.addEventListener('keydown', e=>{
   else if(k==='r') setMode('draw');
   else if(k==='k') setMode('ruler');
   else if(k==='f'){ if(mode==='move' && selection && selection.kind==='face') flattenSelection(); }
+  else if(k==='t'){ toggleGhost(); }
   else if(k==='x'||k==='y'||k==='z'){ if(chopMode) setChopAxis(k); }
   else if(e.key==='Enter'){ if(chopMode){ applyChopNow(); e.preventDefault(); } else if(mode==='draw' && drawStage===3){ applyDraw(); e.preventDefault(); } }
   else if(e.key==='Escape'){ if(chopMode) exitChop(); else if(mode==='draw' && drawStage!==0) cancelDraw(); else setMode('view'); }
