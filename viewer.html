@@ -170,7 +170,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten face (F) — snap a near-planar surface perfectly flat">rev 23</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 24</a>
 </div>
 
 <div class="info" id="info">
@@ -726,7 +726,7 @@ function updateHud(){
   let t='';
   if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'='+(Math.round(chopVal*100)/100)+'</b> set plane value in the panel · hover the half to keep · click a plane / X-Y-Z to switch · Enter applies';
   else if(mode==='move') t = selection
-      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · <b>F</b> flatten to a perfect plane · ⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
+      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · <b>F</b> flatten + patch gaps (perfect surface) ·⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
@@ -844,10 +844,38 @@ function flattenSelection(){
   const d0=sum/idxs.length; let maxErr=0;
   for(const idx of idxs){ const o=idx*3; const dv=(arr[o]*N.x+arr[o+1]*N.y+arr[o+2]*N.z)-d0;
     maxErr=Math.max(maxErr,Math.abs(dv)); arr[o]-=N.x*dv; arr[o+1]-=N.y*dv; arr[o+2]-=N.z*dv; }
-  pos.needsUpdate=true; currentGeometry.computeVertexNormals(); updateDims();
-  applyFaceSelection(selection.tris, faceWork.N, faceWork.T1, faceWork.T2);   // refresh snapshot + highlight
-  toast('Flattened face to a perfect plane (max fix '+maxErr.toFixed(3)+' mm)');
+  pos.needsUpdate=true;
+  // 2) patch gaps: weld hair-line near-coincident vertices so the surface is truly
+  //    continuous (closes the tiny discontinuities the tolerant selection reveals)
+  const base=new THREE.BufferGeometry(); base.setAttribute('position', pos.clone());
+  const { geo:w, closed }=weldGaps(base, GAP_WELD);
+  w.computeVertexNormals(); w.computeBoundingBox();
+  currentMesh.geometry.dispose(); currentMesh.geometry=w; currentGeometry=w;
+  clearSelection(); updateDims(); updateTris();
+  toast('Flattened ('+maxErr.toFixed(3)+' mm) + patched gaps — re-click to keep going');
 }
+const GAP_WELD=0.08;   // mm — max hair-line gap the flatten/patch will weld shut
+// distance-based vertex weld (merges any two verts within `tol`, checking neighbor cells
+// so gaps that straddle a grid line still merge — mergeVertices' grid hash misses those).
+// returns a non-indexed geometry; `closed` = triangles that collapsed away.
+function weldGaps(geo, tol){
+  const pos=geo.getAttribute('position'); const n=pos.count; const inv=1/tol, t2=tol*tol;
+  const cells=new Map(), reps=[], remap=new Int32Array(n);
+  const K=(x,y,z)=>x+','+y+','+z;
+  for(let i=0;i<n;i++){ const x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+    const cx=Math.floor(x*inv),cy=Math.floor(y*inv),cz=Math.floor(z*inv); let f=-1;
+    for(let dx=-1;dx<=1&&f<0;dx++)for(let dy=-1;dy<=1&&f<0;dy++)for(let dz=-1;dz<=1&&f<0;dz++){
+      const l=cells.get(K(cx+dx,cy+dy,cz+dz)); if(!l) continue;
+      for(const ri of l){ const r=reps[ri], a=r[0]-x,b=r[1]-y,c=r[2]-z; if(a*a+b*b+c*c<=t2){ f=ri; break; } } }
+    if(f<0){ f=reps.length; reps.push([x,y,z]); const k=K(cx,cy,cz); let l=cells.get(k); if(!l){l=[];cells.set(k,l);} l.push(f); }
+    remap[i]=f; }
+  const np=new Float32Array(reps.length*3);
+  for(let i=0;i<reps.length;i++){ np[i*3]=reps[i][0];np[i*3+1]=reps[i][1];np[i*3+2]=reps[i][2]; }
+  const idx=[]; let closed=0;
+  for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2];
+    if(a===b||b===c||a===c){ closed++; continue; } idx.push(a,b,c); }
+  const out=new THREE.BufferGeometry(); out.setAttribute('position',new THREE.BufferAttribute(np,3));
+  out.setIndex(idx); return { geo: out.toNonIndexed(), closed }; }
 
 let faceWork=null;                 // {allTris,N,T1,T2} — the coplanar face being edited
 let camAnim=null;                  // smooth flatten-to-face camera animation
