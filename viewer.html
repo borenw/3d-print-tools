@@ -170,7 +170,7 @@
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Move extrude inward now reshapes (no overlapping thin walls)">rev 21</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Export: also drop zero-thickness (coincident) wall faces">rev 22</a>
 </div>
 
 <div class="info" id="info">
@@ -1636,10 +1636,17 @@ function capHoles(P, tris){
 function greedyManifold(P, inTris){
   const V=(k)=>new THREE.Vector3(P[k*3],P[k*3+1],P[k*3+2]);
   const ab=new THREE.Vector3(),ac=new THREE.Vector3(),cr=new THREE.Vector3();
+  // a triangle that shares all 3 vertices with another is a zero-thickness wall
+  // (a face + its back-face) — drop ALL of them, not just the duplicate
+  const kc=new Map();
+  for(let i=0;i<inTris.length;i+=3){ const a=inTris[i],b=inTris[i+1],c=inTris[i+2];
+    if(a===b||b===c||a===c) continue;
+    const key=[a,b,c].slice().sort((x,y)=>x-y).join(','); kc.set(key,(kc.get(key)||0)+1); }
   const seen=new Set(), edgeUse=new Map(), out=[];
   for(let i=0;i<inTris.length;i+=3){ const a=inTris[i],b=inTris[i+1],c=inTris[i+2];
     if(a===b||b===c||a===c) continue;
-    const key=[a,b,c].slice().sort((x,y)=>x-y).join(','); if(seen.has(key)) continue;
+    const key=[a,b,c].slice().sort((x,y)=>x-y).join(',');
+    if(kc.get(key)>1 || seen.has(key)) continue;                 // zero-thickness / duplicate
     if(cr.crossVectors(ab.subVectors(V(b),V(a)),ac.subVectors(V(c),V(a))).lengthSq()<1e-12) continue;
     const e0=_ek(a,b),e1=_ek(b,c),e2=_ek(c,a);
     if((edgeUse.get(e0)||0)>=2||(edgeUse.get(e1)||0)>=2||(edgeUse.get(e2)||0)>=2) continue;
