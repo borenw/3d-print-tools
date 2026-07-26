@@ -168,9 +168,10 @@
   <button id="inverse" title="Inverse / negative — carve the shape out of its bounding block (Ctrl+I)">🔃 Inverse</button>
   <button id="chop" title="Interactive chop — hover the half to keep, click a plane (X/Y/Z) to switch, Enter to apply">✂ Chop</button>
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
+  <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 24</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 25</a>
 </div>
 
 <div class="info" id="info">
@@ -855,10 +856,10 @@ function flattenSelection(){
   toast('Flattened ('+maxErr.toFixed(3)+' mm) + patched gaps — re-click to keep going');
 }
 const GAP_WELD=0.08;   // mm — max hair-line gap the flatten/patch will weld shut
-// distance-based vertex weld (merges any two verts within `tol`, checking neighbor cells
-// so gaps that straddle a grid line still merge — mergeVertices' grid hash misses those).
-// returns a non-indexed geometry; `closed` = triangles that collapsed away.
-function weldGaps(geo, tol){
+// distance-based vertex clustering (merges verts within `tol`, checking neighbour cells
+// so gaps straddling a grid line still merge — mergeVertices' grid hash misses those).
+// returns unique positions P + a per-vertex remap into P.
+function clusterWeld(geo, tol){
   const pos=geo.getAttribute('position'); const n=pos.count; const inv=1/tol, t2=tol*tol;
   const cells=new Map(), reps=[], remap=new Int32Array(n);
   const K=(x,y,z)=>x+','+y+','+z;
@@ -869,13 +870,66 @@ function weldGaps(geo, tol){
       for(const ri of l){ const r=reps[ri], a=r[0]-x,b=r[1]-y,c=r[2]-z; if(a*a+b*b+c*c<=t2){ f=ri; break; } } }
     if(f<0){ f=reps.length; reps.push([x,y,z]); const k=K(cx,cy,cz); let l=cells.get(k); if(!l){l=[];cells.set(k,l);} l.push(f); }
     remap[i]=f; }
-  const np=new Float32Array(reps.length*3);
-  for(let i=0;i<reps.length;i++){ np[i*3]=reps[i][0];np[i*3+1]=reps[i][1];np[i*3+2]=reps[i][2]; }
-  const idx=[]; let closed=0;
+  const P=new Float32Array(reps.length*3);
+  for(let i=0;i<reps.length;i++){ P[i*3]=reps[i][0];P[i*3+1]=reps[i][1];P[i*3+2]=reps[i][2]; }
+  return { P, remap, n }; }
+// build a non-indexed geometry from unique positions + index triples
+function geoFromTris(P, tris){ const out=new THREE.BufferGeometry();
+  out.setAttribute('position',new THREE.BufferAttribute(P,3)); out.setIndex(tris); return out.toNonIndexed(); }
+// weld only (drop collapsed tris); `closed` = triangles that vanished
+function weldGaps(geo, tol){
+  const { P, remap, n }=clusterWeld(geo, tol); const tris=[]; let closed=0;
   for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2];
-    if(a===b||b===c||a===c){ closed++; continue; } idx.push(a,b,c); }
-  const out=new THREE.BufferGeometry(); out.setAttribute('position',new THREE.BufferAttribute(np,3));
-  out.setIndex(idx); return { geo: out.toNonIndexed(), closed }; }
+    if(a===b||b===c||a===c){ closed++; continue; } tris.push(a,b,c); }
+  return { geo: geoFromTris(P, tris), closed }; }
+// Simplify: remove features that are clearly errors vs. the overall shape —
+// welds micro-gaps, drops zero-area slivers and zero-thickness (coincident) wall faces,
+// and deletes tiny disconnected debris. Never caps holes, so a real cavity stays open.
+function simplifyMesh(){
+  if(!currentGeometry){ toast('Load a model first', true); return; }
+  pushUndo();
+  const { P, remap, n }=clusterWeld(currentGeometry, 0.05);
+  const V=(k)=>[P[k*3],P[k*3+1],P[k*3+2]];
+  const area2=(a,b,c)=>{ const A=V(a),B=V(b),C=V(c);
+    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2], vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
+    const cx=uy*vz-uz*vy, cy=uz*vx-ux*vz, cz=ux*vy-uy*vx; return cx*cx+cy*cy+cz*cz; };
+  // count coincident face keys (same 3 verts = a wall and its back-face → zero thickness)
+  const keyCount=new Map();
+  for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2]; if(a===b||b===c||a===c) continue;
+    const k=[a,b,c].slice().sort((x,y)=>x-y).join(','); keyCount.set(k,(keyCount.get(k)||0)+1); }
+  let degen=0, zerowall=0; const tris=[];
+  for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2];
+    if(a===b||b===c||a===c){ degen++; continue; }                       // collapsed by weld
+    if(area2(a,b,c)<1e-10){ degen++; continue; }                        // zero-area sliver
+    const k=[a,b,c].slice().sort((x,y)=>x-y).join(',');
+    if(keyCount.get(k)>1){ zerowall++; continue; }                      // zero-thickness wall face
+    tris.push(a,b,c); }
+  // connectivity by shared edges → components; drop tiny ones (debris)
+  const nT=tris.length/3, parent=new Int32Array(nT); for(let i=0;i<nT;i++) parent[i]=i;
+  const find=(x)=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
+  const uni=(a,b)=>{ a=find(a);b=find(b); if(a!==b) parent[a]=b; };
+  const em=new Map(); const ek=(a,b)=>a<b?a+'_'+b:b+'_'+a;
+  for(let t=0;t<nT;t++){ const a=tris[t*3],b=tris[t*3+1],c=tris[t*3+2];
+    for(const [x,y] of [[a,b],[b,c],[c,a]]){ const k=ek(x,y); const p=em.get(k); if(p===undefined) em.set(k,t); else uni(p,t); } }
+  const comp=new Map();      // root -> {tris:[t], min:[x,y,z], max:[x,y,z]}
+  for(let t=0;t<nT;t++){ const r=find(t); let c=comp.get(r);
+    if(!c){ c={tris:[], min:[1e9,1e9,1e9], max:[-1e9,-1e9,-1e9]}; comp.set(r,c); } c.tris.push(t);
+    for(let k=0;k<3;k++){ const p=V(tris[t*3+k]); for(let d=0;d<3;d++){ if(p[d]<c.min[d])c.min[d]=p[d]; if(p[d]>c.max[d])c.max[d]=p[d]; } } }
+  const diag=(c)=>{ const dx=c.max[0]-c.min[0],dy=c.max[1]-c.min[1],dz=c.max[2]-c.min[2]; return Math.sqrt(dx*dx+dy*dy+dz*dz); };
+  let mainDiag=0; for(const c of comp.values()) mainDiag=Math.max(mainDiag, diag(c));
+  const debrisMax=Math.max(0.6, mainDiag*0.02);   // shard if <0.6mm or <2% of the model
+  let debris=0, debrisTris=0; const keep=[];
+  for(const c of comp.values()){ if(comp.size>1 && diag(c) < debrisMax){ debris++; debrisTris+=c.tris.length; continue; }
+    for(const t of c.tris) keep.push(tris[t*3],tris[t*3+1],tris[t*3+2]); }
+  const before=currentGeometry.getAttribute('position').count/3, after=keep.length/3;
+  const w=geoFromTris(P, keep); w.computeVertexNormals(); w.computeBoundingBox();
+  currentMesh.geometry.dispose(); currentMesh.geometry=w; currentGeometry=w;
+  clearSelection(); updateDims(); updateTris();
+  const parts=[]; if(zerowall)parts.push(zerowall+' thin-wall'); if(degen)parts.push(degen+' sliver');
+  if(debris)parts.push(debris+' stray bit'+(debris>1?'s':'')+' ('+debrisTris+' tris)');
+  toast(parts.length? 'Simplified: removed '+parts.join(', ')+' — '+before+'→'+after+' tris'
+                    : 'Already clean — nothing to simplify ('+after+' tris)');
+}
 
 let faceWork=null;                 // {allTris,N,T1,T2} — the coplanar face being edited
 let camAnim=null;                  // smooth flatten-to-face camera animation
@@ -1893,6 +1947,7 @@ function applyChopNow(){
 }
 document.getElementById('inverse').onclick=invertShape;
 document.getElementById('chop').onclick=()=>{ chopMode?applyChopNow():enterChop(); };
+document.getElementById('simplify').onclick=simplifyMesh;
 
 // ---------- shrink / contract dimensions by mm (scale about the centre) ----------
 const shrinkPanel=document.getElementById('shrinkpanel');
