@@ -171,7 +171,7 @@
   <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 25</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 26</a>
 </div>
 
 <div class="info" id="info">
@@ -727,7 +727,7 @@ function updateHud(){
   let t='';
   if(chopMode) t = '<b>CHOP · '+chopAxis.toUpperCase()+'='+(Math.round(chopVal*100)/100)+'</b> set plane value in the panel · hover the half to keep · click a plane / X-Y-Z to switch · Enter applies';
   else if(mode==='move') t = selection
-      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · <b>F</b> flatten + patch gaps (perfect surface) ·⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
+      ? '<b>MOVE · '+(pushMode==='extrude'?'EXTRUDE':'STRETCH')+'</b> drag blue axis ('+(pushMode==='extrude'?'out=walls, in=reshape':'reshape')+') · <b>F</b> flatten + patch gaps + fewest tris ·⬆ toggle · Ctrl/Shift+drag refine · Del · Esc'
       : '<b>MOVE</b> click a flat face — the view rotates head-on so you can refine it';
   else if(mode==='object') t = (selection&&selection.kind==='object')
       ? '<b>OBJECT</b> drag to detach · Del to remove · click another part to reselect · Esc'
@@ -846,14 +846,24 @@ function flattenSelection(){
   for(const idx of idxs){ const o=idx*3; const dv=(arr[o]*N.x+arr[o+1]*N.y+arr[o+2]*N.z)-d0;
     maxErr=Math.max(maxErr,Math.abs(dv)); arr[o]-=N.x*dv; arr[o+1]-=N.y*dv; arr[o+2]-=N.z*dv; }
   pos.needsUpdate=true;
-  // 2) patch gaps: weld hair-line near-coincident vertices so the surface is truly
+  // 2) reduce: re-triangulate the flat face with the fewest triangles (10-tri rect -> 2)
+  let reduced=0; const base=new THREE.BufferGeometry();
+  let newFace=null; try{ newFace=retriangulateFace(selection.tris, N, faceWork.T1, faceWork.T2); }catch(e){ newFace=null; }
+  if(newFace && newFace.length>0 && newFace.length < selection.tris.length){
+    reduced=selection.tris.length-newFace.length;
+    const skip=new Set(selection.tris), a2=[];
+    for(let t=0;t<pos.count/3;t++){ if(skip.has(t)) continue;
+      for(let k=0;k<3;k++){ const o=(t*3+k)*3; a2.push(arr[o],arr[o+1],arr[o+2]); } }
+    for(const tri of newFace) for(const p of tri) a2.push(p.x,p.y,p.z);
+    base.setAttribute('position', new THREE.BufferAttribute(new Float32Array(a2),3));
+  } else base.setAttribute('position', pos.clone());
+  // 3) patch gaps: weld hair-line near-coincident vertices so the surface is truly
   //    continuous (closes the tiny discontinuities the tolerant selection reveals)
-  const base=new THREE.BufferGeometry(); base.setAttribute('position', pos.clone());
-  const { geo:w, closed }=weldGaps(base, GAP_WELD);
+  const { geo:w }=weldGaps(base, GAP_WELD);
   w.computeVertexNormals(); w.computeBoundingBox();
   currentMesh.geometry.dispose(); currentMesh.geometry=w; currentGeometry=w;
   clearSelection(); updateDims(); updateTris();
-  toast('Flattened ('+maxErr.toFixed(3)+' mm) + patched gaps — re-click to keep going');
+  toast('Flattened ('+maxErr.toFixed(3)+' mm) + patched gaps'+(reduced? ' + merged '+reduced+' tris':'')+' — re-click to keep going');
 }
 const GAP_WELD=0.08;   // mm — max hair-line gap the flatten/patch will weld shut
 // distance-based vertex clustering (merges verts within `tol`, checking neighbour cells
@@ -1033,6 +1043,47 @@ function faceBoundaryEdges(tris){
                                      new THREE.Vector3().fromBufferAttribute(pos,vi[(e+1)%3])]); } }
   const edges=[]; for(const [key,c] of count) if(c===1) edges.push(rep.get(key));
   return edges;
+}
+// re-triangulate a coplanar face with the fewest triangles (e.g. a rectangle drawn with
+// 10 tris -> 2). Keeps the perimeter vertices (so it stays stitched to the mesh) and drops
+// interior ones. Returns new triangles as [Vec3,Vec3,Vec3][] oriented to +N, or null if the
+// boundary isn't a set of clean simple loops (then we leave the face as-is).
+function retriangulateFace(tris, N, T1, T2){
+  const edges=faceBoundaryEdges(tris); if(edges.length<3) return null;
+  const key=(v)=>keyOf(v.x,v.y,v.z); const posOf=new Map(), out=new Map(), indeg=new Map();
+  for(const [A,B] of edges){ const ka=key(A),kb=key(B); if(ka===kb) return null;
+    posOf.set(ka,A); posOf.set(kb,B);
+    if(out.has(ka)) return null;                     // vertex with 2 out-edges = non-simple boundary
+    out.set(ka,kb); indeg.set(kb,(indeg.get(kb)||0)+1); }
+  for(const k of out.keys()) if((indeg.get(k)||0)!==1) return null;   // each vertex exactly one in/out
+  // walk directed loops
+  const seen=new Set(), loops=[];
+  for(const start of out.keys()){ if(seen.has(start)) continue;
+    const loop=[]; let cur=start, guard=0;
+    while(guard++<200000){ if(seen.has(cur)){ break; } seen.add(cur); loop.push(posOf.get(cur));
+      const nx=out.get(cur); if(nx===undefined){ loop.length=0; break; } cur=nx; if(cur===start) break; }
+    if(loop.length>=3) loops.push(loop); }
+  if(!loops.length) return null;
+  const to2=(v)=>new THREE.Vector2(v.dot(T1), v.dot(T2));
+  const sarea=(pts)=>{ let s=0; for(let i=0;i<pts.length;i++){ const a=pts[i],b=pts[(i+1)%pts.length]; s+=a.x*b.y-b.x*a.y; } return s/2; };
+  const L=loops.map(lp=>({ v3:lp, v2:lp.map(to2) })); L.forEach(o=>o.area=sarea(o.v2));
+  // outer loops = positive area (CCW around +N); holes = negative
+  const outers=L.filter(o=>o.area>0), holes=L.filter(o=>o.area<0);
+  if(!outers.length) return null;
+  const inside=(pt,poly)=>{ let c=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const a=poly[i],b=poly[j]; if(((a.y>pt.y)!==(b.y>pt.y)) && (pt.x<(b.x-a.x)*(pt.y-a.y)/(b.y-a.y)+a.x)) c=!c; } return c; };
+  const newTris=[];
+  for(const outer of outers){
+    const myHoles=holes.filter(h=>inside(h.v2[0], outer.v2));
+    const contour=outer.v2.slice(), holePts=myHoles.map(h=>h.v2.slice());
+    let idxTris; try{ idxTris=THREE.ShapeUtils.triangulateShape(contour, holePts); }catch(e){ return null; }
+    if(!idxTris||!idxTris.length) return null;
+    const pts3=outer.v3.slice(); for(const h of myHoles) pts3.push(...h.v3);
+    for(const [i,j,k] of idxTris){ let p0=pts3[i],p1=pts3[j],p2=pts3[k];
+      const nx=new THREE.Vector3().subVectors(p1,p0).cross(new THREE.Vector3().subVectors(p2,p0));
+      if(nx.dot(N)<0){ const t=p1; p1=p2; p2=t; }        // orient to +N
+      newTris.push([p0,p1,p2]); } }
+  return newTris;
 }
 let wallMesh=null;
 function updateWalls(disp){
