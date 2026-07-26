@@ -169,10 +169,10 @@
   <button id="inverse" title="Inverse / negative — carve the shape out of its bounding block (Ctrl+I)">🔃 Inverse</button>
   <button id="chop" title="Interactive chop — hover the half to keep, click a plane (X/Y/Z) to switch, Enter to apply">✂ Chop</button>
   <button id="shrinkbtn" title="Shrink dimensions by mm (scales about the centre)">⇲ Shrink</button>
-  <button id="simplify" title="Simplify — weld micro-gaps, drop sliver/zero-thickness (thin-wall) faces and tiny stray bits; keeps the overall shape">✨ Simplify</button>
+  <button id="simplify" title="Fix — the QC gate: weld gaps, drop zero-thickness/sliver/degenerate faces and stray bits, fix normals, drop to plate (never fills a cavity). Runs automatically on every save too.">✨ Fix</button>
   <button id="save3mf" title="Save the current mesh as .3mf">💾 .3mf</button>
   <button id="savestl" title="Save the current mesh as .stl">.stl</button>
-  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 102</a>
+  <a class="rev" href="https://github.com/borenw/3d-print-tools/commits/main" target="_blank" title="Flatten+patch (F): flatten a face and weld hair-line gaps">rev 103</a>
 </div>
 
 <div class="info" id="info">
@@ -908,36 +908,20 @@ function weldGaps(geo, tol){
   for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2];
     if(a===b||b===c||a===c){ closed++; continue; } tris.push(a,b,c); }
   return { geo: geoFromTris(P, tris), closed }; }
-// Simplify: remove features that are clearly errors vs. the overall shape —
+// (debris connectivity helper for the Fix QC gate) — remove features that are clearly errors —
 // welds micro-gaps, drops zero-area slivers and zero-thickness (coincident) wall faces,
 // and deletes tiny disconnected debris. Never caps holes, so a real cavity stays open.
-function simplifyMesh(){
-  if(!currentGeometry){ toast('Load a model first', true); return; }
-  pushUndo();
-  const { P, remap, n }=clusterWeld(currentGeometry, 0.05);
+// drop tiny disconnected components (debris) from an indexed tri list; returns kept tris
+function dropDebris(P, tris){
   const V=(k)=>[P[k*3],P[k*3+1],P[k*3+2]];
-  const area2=(a,b,c)=>{ const A=V(a),B=V(b),C=V(c);
-    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2], vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
-    const cx=uy*vz-uz*vy, cy=uz*vx-ux*vz, cz=ux*vy-uy*vx; return cx*cx+cy*cy+cz*cz; };
-  // count coincident face keys (same 3 verts = a wall and its back-face → zero thickness)
-  const keyCount=new Map();
-  for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2]; if(a===b||b===c||a===c) continue;
-    const k=[a,b,c].slice().sort((x,y)=>x-y).join(','); keyCount.set(k,(keyCount.get(k)||0)+1); }
-  let degen=0, zerowall=0; const tris=[];
-  for(let i=0;i<n;i+=3){ const a=remap[i],b=remap[i+1],c=remap[i+2];
-    if(a===b||b===c||a===c){ degen++; continue; }                       // collapsed by weld
-    if(area2(a,b,c)<1e-10){ degen++; continue; }                        // zero-area sliver
-    const k=[a,b,c].slice().sort((x,y)=>x-y).join(',');
-    if(keyCount.get(k)>1){ zerowall++; continue; }                      // zero-thickness wall face
-    tris.push(a,b,c); }
-  // connectivity by shared edges → components; drop tiny ones (debris)
-  const nT=tris.length/3, parent=new Int32Array(nT); for(let i=0;i<nT;i++) parent[i]=i;
+  const nT=tris.length/3; if(!nT) return { keep:tris.slice(), debris:0, debrisTris:0 };
+  const parent=new Int32Array(nT); for(let i=0;i<nT;i++) parent[i]=i;
   const find=(x)=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
   const uni=(a,b)=>{ a=find(a);b=find(b); if(a!==b) parent[a]=b; };
   const em=new Map(); const ek=(a,b)=>a<b?a+'_'+b:b+'_'+a;
   for(let t=0;t<nT;t++){ const a=tris[t*3],b=tris[t*3+1],c=tris[t*3+2];
     for(const [x,y] of [[a,b],[b,c],[c,a]]){ const k=ek(x,y); const p=em.get(k); if(p===undefined) em.set(k,t); else uni(p,t); } }
-  const comp=new Map();      // root -> {tris:[t], min:[x,y,z], max:[x,y,z]}
+  const comp=new Map();
   for(let t=0;t<nT;t++){ const r=find(t); let c=comp.get(r);
     if(!c){ c={tris:[], min:[1e9,1e9,1e9], max:[-1e9,-1e9,-1e9]}; comp.set(r,c); } c.tris.push(t);
     for(let k=0;k<3;k++){ const p=V(tris[t*3+k]); for(let d=0;d<3;d++){ if(p[d]<c.min[d])c.min[d]=p[d]; if(p[d]>c.max[d])c.max[d]=p[d]; } } }
@@ -947,14 +931,7 @@ function simplifyMesh(){
   let debris=0, debrisTris=0; const keep=[];
   for(const c of comp.values()){ if(comp.size>1 && diag(c) < debrisMax){ debris++; debrisTris+=c.tris.length; continue; }
     for(const t of c.tris) keep.push(tris[t*3],tris[t*3+1],tris[t*3+2]); }
-  const before=currentGeometry.getAttribute('position').count/3, after=keep.length/3;
-  const w=geoFromTris(P, keep); w.computeVertexNormals(); w.computeBoundingBox();
-  currentMesh.geometry.dispose(); currentMesh.geometry=w; currentGeometry=w;
-  clearSelection(); updateDims(); updateTris();
-  const parts=[]; if(zerowall)parts.push(zerowall+' thin-wall'); if(degen)parts.push(degen+' sliver');
-  if(debris)parts.push(debris+' stray bit'+(debris>1?'s':'')+' ('+debrisTris+' tris)');
-  toast(parts.length? 'Simplified: removed '+parts.join(', ')+' — '+before+'→'+after+' tris'
-                    : 'Already clean — nothing to simplify ('+after+' tris)');
+  return { keep, debris, debrisTris };
 }
 
 const MIN_WALL=0.4;    // mm — walls thinner than this are flagged after a move
@@ -1004,7 +981,7 @@ function finalizeMove(){
     clearSelection(); updateDims(); updateTris(); }
   const cleaned=[]; if(res.zero) cleaned.push(res.zero+' zero-thickness'); if(res.degen) cleaned.push(res.degen+' degenerate');
   if(cleaned.length) toast('Auto-cleaned '+cleaned.join(' + ')+' face'+(res.zero+res.degen>1?'s':'')+' after the move');
-  if(thin) toast('⚠ '+thin+' thin wall'+(thin>1?'s':'')+' (<'+MIN_WALL+'mm) — Undo (⌘Z), move less, or ✨ Simplify', true);
+  if(thin) toast('⚠ '+thin+' thin wall'+(thin>1?'s':'')+' (<'+MIN_WALL+'mm) — Undo (⌘Z), move less, or ✨ Fix', true);
   return {rebuilt:res.changed, thin, zero:res.zero, degen:res.degen};
 }
 
@@ -2061,36 +2038,56 @@ function orientFaces(P, tris){
     if(vol<0) for(const f of comp) flip(f);     // this component inside-out → flip just it
   }
 }
-function cleanForExport(geo){
+// ===== Fix: the QC gate — one repair used by both the ✨ Fix button and every export =====
+// Weld coincident/near vertices, drop duplicate/zero-thickness/over-connected/degenerate
+// faces (greedyManifold), delete tiny disconnected debris, make normals point outward, and
+// sit the model on the plate. Hole-capping is OFF by default (it can fill an open cavity);
+// pass {cap:true} only when watertightness matters more than preserving recesses.
+function fixMesh(geo, opts){
+  const cap = !!(opts && opts.cap);
   const base=new THREE.BufferGeometry();
   base.setAttribute('position', (geo.index?geo.toNonIndexed():geo).getAttribute('position').clone());
-  const g=BufferGeometryUtils.mergeVertices(base, 1e-4);
+  const g=BufferGeometryUtils.mergeVertices(base, 1e-4);           // weld coincident vertices
   const posAttr=g.getAttribute('position'); const idx=g.index;
   const P=[]; for(let i=0;i<posAttr.count;i++) P.push(posAttr.getX(i),posAttr.getY(i),posAttr.getZ(i));
   g.computeBoundingBox(); const b=g.boundingBox;
   const cx=(b.min.x+b.max.x)/2, cy=(b.min.y+b.max.y)/2, mz=b.min.z;
-  for(let i=0;i<P.length;i+=3){ P[i]-=cx; P[i+1]-=cy; P[i+2]-=mz; }
+  for(let i=0;i<P.length;i+=3){ P[i]-=cx; P[i+1]-=cy; P[i+2]-=mz; } // centre XY + drop to plate
   const inTris=[]; for(let i=0;i<idx.count;i++) inTris.push(idx.getX(i));
   const before=inTris.length/3;
-  let tris=greedyManifold(P, inTris);
+  let tris=greedyManifold(P, inTris);                              // drop dup / zero-thickness / over / degenerate
   let capped=0;
-  for(let it=0; it<12; it++){                 // re-filter (drop over) then cap (close holes)
-    tris=greedyManifold(P, tris);
-    const c=capHoles(P, tris); capped+=c;
-    if(!c) break;                             // ends on a cap → no open holes
-  }
-  orientFaces(P, tris);                        // consistent outward normals
+  if(cap){ for(let it=0; it<12; it++){ tris=greedyManifold(P, tris); const c=capHoles(P, tris); capped+=c; if(!c) break; } }
+  else tris=greedyManifold(P, tris);
+  const dd=dropDebris(P, tris); tris=dd.keep;                      // remove tiny stray bits
+  orientFaces(P, tris);                                            // consistent outward normals
   const ng=new THREE.BufferGeometry();
   ng.setAttribute('position', new THREE.Float32BufferAttribute(P,3)); ng.setIndex(tris);
-  return {geo:ng, lifted:mz, removed:before-tris.length/3, capped};
+  return { geo:ng, lifted:mz, removed:before-tris.length/3, capped, debris:dd.debris, debrisTris:dd.debrisTris };
+}
+function fixMsg(c){ const p=[];
+  if(c.removed>0) p.push('removed '+c.removed+' bad tri'+(c.removed>1?'s':''));
+  if(c.debris) p.push('removed '+c.debris+' stray bit'+(c.debris>1?'s':''));
+  if(c.capped) p.push('capped '+c.capped+' hole'+(c.capped>1?'s':''));
+  if(c.lifted>0.01) p.push('dropped '+c.lifted.toFixed(1)+'mm to plate');
+  p.push('normals fixed'); return p.join(', '); }
+// ✨ Fix button — run the QC gate live on the loaded mesh
+function fixButton(){
+  if(!currentGeometry){ toast('Load a model first', true); return; }
+  pushUndo();
+  const before=currentGeometry.getAttribute('position').count/3;
+  const c=fixMesh(currentGeometry, {cap:false});
+  let ng=c.geo.toNonIndexed(); ng.computeVertexNormals(); ng.computeBoundingBox();
+  currentMesh.geometry.dispose(); currentMesh.geometry=ng; currentGeometry=ng;
+  clearSelection(); updateDims(); updateTris();
+  toast('Fixed: '+fixMsg(c)+' — '+before+'→'+(ng.getAttribute('position').count/3)+' tris');
 }
 document.getElementById('save3mf').onclick=()=>{ if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh to save)',true); return; }
-  const c=cleanForExport(currentGeometry);
-  download(build3MF(c.geo), currentName+'_edited.3mf'); toast('Saved '+currentName+'_edited.3mf · '+cleanMsg(c)); };
+  const c=fixMesh(currentGeometry, {cap:false});                  // QC gate before every export
+  download(build3MF(c.geo), currentName+'_edited.3mf'); toast('Saved '+currentName+'_edited.3mf · QC: '+fixMsg(c)); };
 document.getElementById('savestl').onclick=()=>{ if(!currentGeometry){ toast('Load a mesh first (G-code has no mesh to save)',true); return; }
-  const c=cleanForExport(currentGeometry);
-  download(stlBlob(c.geo), currentName+'_edited.stl'); toast('Saved '+currentName+'_edited.stl · '+cleanMsg(c)); };
-function cleanMsg(c){ return 'welded'+(c.capped?', capped '+c.capped+' open face(s)':'')+(c.removed?', removed '+c.removed+' bad tris':'')+(c.lifted>0.01?', dropped '+c.lifted.toFixed(1)+'mm to plate':''); }
+  const c=fixMesh(currentGeometry, {cap:false});
+  download(stlBlob(c.geo), currentName+'_edited.stl'); toast('Saved '+currentName+'_edited.stl · QC: '+fixMsg(c)); };
 
 // ---------- inverse (negative) + axis chops (CSG) ----------
 function replaceGeo(ng){ if(ng.index) ng=ng.toNonIndexed();   // editor tools expect a triangle soup
@@ -2232,7 +2229,7 @@ function applyChopNow(){
 }
 document.getElementById('inverse').onclick=invertShape;
 document.getElementById('chop').onclick=()=>{ chopMode?applyChopNow():enterChop(); };
-document.getElementById('simplify').onclick=simplifyMesh;
+document.getElementById('simplify').onclick=fixButton;
 
 // ---------- shrink / contract dimensions by mm (scale about the centre) ----------
 const shrinkPanel=document.getElementById('shrinkpanel');

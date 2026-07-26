@@ -14,4 +14,4 @@ so a viewer can tell which build is live. Never skip (except the one deliberate 
 marker (the "clean move-surface" release). It no longer equals the commit count; keep
 incrementing by exactly 1 from 100 on every push.
 
-Current: **rev 102**.
+Current: **rev 103**.
